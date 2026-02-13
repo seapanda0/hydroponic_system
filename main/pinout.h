@@ -5,11 +5,11 @@
 
 #define DBG_LED  GPIO_NUM_17
 
+#define LCD_WR     GPIO_NUM_13 // Data control pin, labelled as RS in schematic
 #define LCD_BL     GPIO_NUM_4
-#define LCD_RS     GPIO_NUM_13
+#define LCD_CS     GPIO_NUM_10
 #define LCD_SDA    GPIO_NUM_12
 #define LCD_SCK    GPIO_NUM_11
-#define LCD_CS     GPIO_NUM_10
 #define LCD_RESET  GPIO_NUM_9
 
 #define TP_SCL GPIO_NUM_42
