@@ -1,2 +1,22 @@
-build/
-.vscode
+# Node.js
+**/node_modules/
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/.env
+
+# Arduino / ESP32
+**/build/
+**/sketch/*.json
+**/sketch/*.elf
+**/sketch/*.bin
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
