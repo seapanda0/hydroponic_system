@@ -11,7 +11,8 @@ dependencies:
       type: service
     version: 8.4.0
 direct_dependencies:
+- idf
 - lvgl/lvgl
-manifest_hash: 7d89e30284356f9bc90cfa8e48f1c48ba6b272ac7b3cd8c550c1bfae96094d79
+manifest_hash: f46d06a7de13dccd7fc092f41575ce80ad2901fd4f22dc7f3ac638b47137e14a
 target: esp32s3
 version: 3.0.0

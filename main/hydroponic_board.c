@@ -27,6 +27,7 @@
 #include "wifi.h"        // WiFi credentials (SSID also shown on the display)
 #include "web_server.h"  // WiFi + HTTP server module
 #include "settings_manager.h"  // NVS-backed dosing settings
+#include "hydro_mqtt.h"  // MQTT client (enable/disable via mqtt_config.h)
 
 // Dosing head state. Each head is a pump + valve set wired in parallel on a single GPIO.
 typedef struct {
@@ -368,6 +369,7 @@ static void ui_pump_switch_cb(bool is_on)
 {
 	s_pump_on = is_on;
     ESP_LOGI(TAG, "Circulation pump %s", is_on ? "ON" : "OFF");
+    hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_PUMP, is_on);
 }
 
 static void ui_light_switch_cb(bool is_on)
@@ -375,6 +377,7 @@ static void ui_light_switch_cb(bool is_on)
 	s_grow_light_on = is_on;
 	gpio_set_level(GROW_LIGHT_GPIO, is_on ? 1 : 0);
 	ESP_LOGI(TAG, "Grow light %s", is_on ? "ON" : "OFF");
+    hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_LIGHT, is_on);
 }
 
 static void ui_fert_a_switch_cb(bool is_on)
@@ -382,6 +385,7 @@ static void ui_fert_a_switch_cb(bool is_on)
     s_fert_a_on = is_on;
     gpio_set_level(FERT_A_GPIO, is_on ? 1 : 0);
     ESP_LOGI(TAG, "Fertilizer A pump %s", is_on ? "ON" : "OFF");
+    hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_FERT_A, is_on);
 }
 
 static void ui_fert_b_switch_cb(bool is_on)
@@ -389,6 +393,7 @@ static void ui_fert_b_switch_cb(bool is_on)
     s_fert_b_on = is_on;
     gpio_set_level(FERT_B_GPIO, is_on ? 1 : 0);
     ESP_LOGI(TAG, "Fertilizer B pump %s", is_on ? "ON" : "OFF");
+    hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_FERT_B, is_on);
 }
 
 // Routine buttons on the LVGL routines page
@@ -641,6 +646,8 @@ static void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
     }
 }
 
+static bool any_routine_active(void);
+
 static void sensor_read_task(void *pvParameters)
 {
     (void)pvParameters;
@@ -697,6 +704,25 @@ static void sensor_read_task(void *pvParameters)
 #if LOG_SENSORS
         ESP_LOGI("SENSORS", "%s", log_line);
 #endif
+
+        static uint32_t s_mqtt_ticks = 0;
+        if (any_routine_active()) {
+            s_mqtt_ticks = 0;
+            hydro_mqtt_publish_sensors(
+                g_ui_temperature_c, g_ui_humidity_pct,
+                g_ui_water_level_pct, g_ui_distance_mm,
+                g_ui_ec_us_cm, g_ui_tds_ppm,
+                gpio_get_level(LIQUID_SENSOR_1) != 0,
+                gpio_get_level(LIQUID_SENSOR_2) != 0);
+        } else if (++s_mqtt_ticks >= (HYDRO_MQTT_PUBLISH_INTERVAL_S / 2U)) {
+            s_mqtt_ticks = 0;
+            hydro_mqtt_publish_sensors(
+                g_ui_temperature_c, g_ui_humidity_pct,
+                g_ui_water_level_pct, g_ui_distance_mm,
+                g_ui_ec_us_cm, g_ui_tds_ppm,
+                gpio_get_level(LIQUID_SENSOR_1) != 0,
+                gpio_get_level(LIQUID_SENSOR_2) != 0);
+        }
 
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
@@ -1230,6 +1256,7 @@ void hydro_web_toggle(const char *device, float concentration)
         s_grow_light_on = !s_grow_light_on;
         gpio_set_level(GROW_LIGHT_GPIO, s_grow_light_on ? 1 : 0);
         ESP_LOGI(TAG, "Grow light %s (web)", s_grow_light_on ? "ON" : "OFF");
+        hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_LIGHT, s_grow_light_on);
         return;
     }
 
@@ -1332,6 +1359,21 @@ static bool any_shot_dose_active(void)
     return false;
 }
 
+static bool any_routine_active(void)
+{
+    for (size_t i = 0; i < sizeof(s_dosing_heads) / sizeof(s_dosing_heads[0]); i++) {
+        if (s_dosing_heads[i].prime_active || s_dosing_heads[i].shot_dose_active) {
+            return true;
+        }
+    }
+    for (size_t g = 0; g < DOSE_GROUP_COUNT; g++) {
+        if (s_dose_groups[g].active) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void ba234_read_task(void * arg){
     
     // Initialize TDS/EC sensor
@@ -1373,6 +1415,7 @@ void app_main(void)
 
     // Start WiFi connection
     wifi_init_sta();
+    hydro_mqtt_init();
 
 	Sensors_Init();
     xTaskCreate(sensor_read_task, "sensor_read_task", 4096, NULL, 4, NULL);
