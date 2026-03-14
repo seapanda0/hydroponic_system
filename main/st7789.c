@@ -148,7 +148,6 @@ bool spi_master_write_data_byte(TFT_t * dev, uint8_t data)
 	return spi_master_write_byte( dev->_SPIHandle, &Byte, 1 );
 }
 
-
 bool spi_master_write_data_word(TFT_t * dev, uint16_t data)
 {
 	static uint8_t Byte[2];
@@ -200,7 +199,6 @@ void delayMS(int ms) {
 	ESP_LOGD(TAG, "ms=%d _ms=%d portTICK_PERIOD_MS=%"PRIu32" xTicksToDelay=%"PRIu32,ms,_ms,portTICK_PERIOD_MS,xTicksToDelay);
 	vTaskDelay(xTicksToDelay);
 }
-
 
 void lcdInit(TFT_t * dev, int width, int height, int offsetx, int offsety)
 {
@@ -266,7 +264,6 @@ void lcdInit(TFT_t * dev, int width, int height, int offsetx, int offsety)
 #endif
 }
 
-
 // Draw pixel
 // x:X coordinate
 // y:Y coordinate
@@ -290,7 +287,6 @@ void lcdDrawPixel(TFT_t * dev, uint16_t x, uint16_t y, uint16_t color){
 		spi_master_write_colors(dev, &color, 1);
 	}
 }
-
 
 // Draw multi pixel
 // x:X coordinate

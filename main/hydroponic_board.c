@@ -20,8 +20,8 @@
 
 static const char *TAG = "ST7789";
 
-#define CONFIG_WIDTH  320
-#define CONFIG_HEIGHT 240
+#define CONFIG_WIDTH  240
+#define CONFIG_HEIGHT 320
 #define CONFIG_OFFSETX 0
 #define CONFIG_OFFSETY 0
 
@@ -302,7 +302,6 @@ TickType_t VerticalTest(TFT_t * dev, FontxFile *fx, int width, int height) {
 	ESP_LOGI(__FUNCTION__, "elapsed time[ms]:%"PRIu32,diffTick*portTICK_PERIOD_MS);
 	return diffTick;
 }
-
 
 TickType_t LineTest(TFT_t * dev, int width, int height) {
 	TickType_t startTick, endTick, diffTick;
