@@ -730,7 +730,6 @@ void lcdDrawFillArrow(TFT_t * dev, uint16_t x0,uint16_t y0,uint16_t x1,uint16_t 
 	}
 }
 
-
 // Draw ASCII character
 // x:X coordinate
 // y:Y coordinate
@@ -884,7 +883,6 @@ int lcdDrawString(TFT_t * dev, FontxFile *fx, uint16_t x, uint16_t y, uint8_t * 
 	if (dev->_font_direction == 3) return y;
 	return 0;
 }
-
 
 // Draw Non-Alphanumeric character
 // x:X coordinate
