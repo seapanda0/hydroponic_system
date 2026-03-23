@@ -1,0 +1,4 @@
+idf_component_register(SRCS "ui.c" "ui_helpers.c" "ui_comp_hook.c" "screens/ui_Screen1.c"
+                       INCLUDE_DIRS "."
+                       REQUIRES lvgl)
+target_compile_definitions(${COMPONENT_LIB} PUBLIC "-DLV_COLOR_16_SWAP=1")
