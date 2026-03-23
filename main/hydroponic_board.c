@@ -24,6 +24,13 @@ static void wait_for_touch(void);
 
 static const char *TAG = "ST7789";
 
+// Map grow light control to a physical output pin.
+// Change this alias if your grow light relay is wired differently.
+#define GROW_LIGHT_GPIO WS2811_CTRL
+
+static bool s_pump_on = false;
+static bool s_grow_light_on = false;
+
 #define CONFIG_WIDTH  240
 #define CONFIG_HEIGHT 320
 #define CONFIG_OFFSETX 0
@@ -144,6 +151,29 @@ static void tp_init(void) {
     } else {
         ESP_LOGE(TAG, "I2C Init Failed.");
     }
+}
+
+static void init_actuator_outputs(void)
+{
+	gpio_set_direction(PUMP_GPIO, GPIO_MODE_OUTPUT);
+	gpio_set_direction(GROW_LIGHT_GPIO, GPIO_MODE_OUTPUT);
+
+	gpio_set_level(PUMP_GPIO, 0);
+	gpio_set_level(GROW_LIGHT_GPIO, 0);
+}
+
+static void ui_pump_switch_cb(bool is_on)
+{
+	s_pump_on = is_on;
+	gpio_set_level(PUMP_GPIO, is_on ? 1 : 0);
+	ESP_LOGI(TAG, "Pump %s", is_on ? "ON" : "OFF");
+}
+
+static void ui_light_switch_cb(bool is_on)
+{
+	s_grow_light_on = is_on;
+	gpio_set_level(GROW_LIGHT_GPIO, is_on ? 1 : 0);
+	ESP_LOGI(TAG, "Grow light %s", is_on ? "ON" : "OFF");
 }
 
 static void wait_for_touch(void) {
@@ -666,6 +696,8 @@ void ST7789(void *pvParameters)
 {
 	// Give the serial monitor time to connect over USB before printing important logs
 	vTaskDelay(pdMS_TO_TICKS(3000));
+
+    init_actuator_outputs();
 	
 	// Initialize Touch Controller
     tp_init();
@@ -727,7 +759,15 @@ void ST7789(void *pvParameters)
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = my_touchpad_read;
     lv_indev_drv_register(&indev_drv);
+
+	kinetic_os_set_pump_switch_cb(ui_pump_switch_cb);
+	kinetic_os_set_light_switch_cb(ui_light_switch_cb);
+
     kinetic_os_ui_init();
+
+	kinetic_os_set_pump_state(s_pump_on);
+	kinetic_os_set_light_state(s_grow_light_on);
+
     while(1) {
         lv_timer_handler();
         vTaskDelay(pdMS_TO_TICKS(10));
