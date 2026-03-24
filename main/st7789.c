@@ -80,7 +80,7 @@ void spi_master_init(TFT_t * dev, int16_t GPIO_MOSI, int16_t GPIO_SCLK, int16_t 
 		.sclk_io_num = GPIO_SCLK,
 		.quadwp_io_num = -1,
 		.quadhd_io_num = -1,
-		.max_transfer_sz = 0,
+		.max_transfer_sz = 320 * 240 * 2, // Unlock SPI DMA limits for full-screen blasts
 		.flags = 0
 	};
 
@@ -730,6 +730,7 @@ void lcdDrawFillArrow(TFT_t * dev, uint16_t x0,uint16_t y0,uint16_t x1,uint16_t 
 	}
 }
 
+
 // Draw ASCII character
 // x:X coordinate
 // y:Y coordinate
@@ -883,6 +884,7 @@ int lcdDrawString(TFT_t * dev, FontxFile *fx, uint16_t x, uint16_t y, uint8_t * 
 	if (dev->_font_direction == 3) return y;
 	return 0;
 }
+
 
 // Draw Non-Alphanumeric character
 // x:X coordinate
