@@ -26,16 +26,22 @@ void kinetic_os_ui_init(void);
 // Hardware Synchronization API for ESP Dashboard
 void kinetic_os_set_pump_state(bool on);
 void kinetic_os_set_light_state(bool on);
+void kinetic_os_set_fertilizer_a_state(bool on);
+void kinetic_os_set_fertilizer_b_state(bool on);
 void kinetic_os_set_wifi_name(const char * ssid);
+void kinetic_os_set_temperature(float celsius);
+void kinetic_os_set_humidity(float pct);
+void kinetic_os_set_water_level(uint8_t pct);
 
 // Event hooks for broadcasting UI taps back to ESP
 typedef void (*kinetic_os_switch_cb_t)(bool is_on);
 void kinetic_os_set_pump_switch_cb(kinetic_os_switch_cb_t cb);
 void kinetic_os_set_light_switch_cb(kinetic_os_switch_cb_t cb);
+void kinetic_os_set_fertilizer_a_switch_cb(kinetic_os_switch_cb_t cb);
+void kinetic_os_set_fertilizer_b_switch_cb(kinetic_os_switch_cb_t cb);
 
 void kinetic_os_set_light_intensity(uint8_t pct);
 typedef void (*kinetic_os_slider_cb_t)(uint8_t pct);
-void kinetic_os_set_light_intensity_cb(kinetic_os_slider_cb_t cb);
 
 #ifdef __cplusplus
 }

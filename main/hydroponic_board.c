@@ -32,7 +32,12 @@ static const char *TAG = "ST7789";
 
 static bool s_pump_on = false;
 static bool s_grow_light_on = false;
+static bool s_fert_a_on = false;
+static bool s_fert_b_on = false;
 static bool g_touch_ready = false;
+static volatile float g_ui_temperature_c = 24.0f;
+static volatile float g_ui_humidity_pct = 58.0f;
+static volatile uint8_t g_ui_water_level_pct = 72U;
 
 #define CONFIG_WIDTH  240
 #define CONFIG_HEIGHT 320
@@ -84,8 +89,7 @@ static uint8_t calculate_tank_water_percent(uint16_t current_distance_cm)
 }
 
 // I2C Bus for touch panel, I2C number 0
-static esp_err_t i2c_master_init(void)
-{
+static esp_err_t i2c_master_init(void) {
     if (i2c_bus_touch_handle != NULL && ft6236_handle != NULL) {
         return ESP_OK;
     }
@@ -117,7 +121,6 @@ static esp_err_t i2c_master_init(void)
 
     return ESP_OK;
 }
-
 
 // I2C Bus for the sensors, I2C number 1
 static esp_err_t i2c_master_init_bus_sensors(void){
@@ -212,9 +215,11 @@ static void tp_init(void) {
 
 static void init_actuator_outputs(void)
 {
+    gpio_set_direction(FAN_GPIO, GPIO_MODE_OUTPUT);
 	gpio_set_direction(PUMP_GPIO, GPIO_MODE_OUTPUT);
 	gpio_set_direction(GROW_LIGHT_GPIO, GPIO_MODE_OUTPUT);
 
+    gpio_set_level(FAN_GPIO, 0);
 	gpio_set_level(PUMP_GPIO, 0);
 	gpio_set_level(GROW_LIGHT_GPIO, 0);
 }
@@ -222,8 +227,7 @@ static void init_actuator_outputs(void)
 static void ui_pump_switch_cb(bool is_on)
 {
 	s_pump_on = is_on;
-	gpio_set_level(PUMP_GPIO, is_on ? 1 : 0);
-	ESP_LOGI(TAG, "Pump %s", is_on ? "ON" : "OFF");
+    ESP_LOGI(TAG, "Circulation pump %s", is_on ? "ON" : "OFF");
 }
 
 static void ui_light_switch_cb(bool is_on)
@@ -231,6 +235,20 @@ static void ui_light_switch_cb(bool is_on)
 	s_grow_light_on = is_on;
 	gpio_set_level(GROW_LIGHT_GPIO, is_on ? 1 : 0);
 	ESP_LOGI(TAG, "Grow light %s", is_on ? "ON" : "OFF");
+}
+
+static void ui_fert_a_switch_cb(bool is_on)
+{
+    s_fert_a_on = is_on;
+    gpio_set_level(FAN_GPIO, is_on ? 1 : 0);
+    ESP_LOGI(TAG, "Fertilizer A pump %s", is_on ? "ON" : "OFF");
+}
+
+static void ui_fert_b_switch_cb(bool is_on)
+{
+    s_fert_b_on = is_on;
+    gpio_set_level(PUMP_GPIO, is_on ? 1 : 0);
+    ESP_LOGI(TAG, "Fertilizer B pump %s", is_on ? "ON" : "OFF");
 }
 
 static void wait_for_touch(void) {
@@ -322,6 +340,14 @@ static void sensor_read_task(void *pvParameters)
             float humidity = 0.0f;
             esp_err_t ret = sht4x_measure_high_precision(&g_sht4x, &temperature, &humidity);
             if (ret == ESP_OK) {
+                float humidity_pct = humidity;
+                if (humidity_pct < 0.0f) {
+                    humidity_pct = 0.0f;
+                } else if (humidity_pct > 100.0f) {
+                    humidity_pct = 100.0f;
+                }
+                g_ui_temperature_c = temperature;
+                g_ui_humidity_pct = humidity_pct;
                 ESP_LOGI("SHT40", "Temperature: %.2f C, Humidity: %.2f %%", temperature, humidity);
             } else {
                 ESP_LOGW("SHT40", "Read failed: %s", esp_err_to_name(ret));
@@ -333,6 +359,7 @@ static void sensor_read_task(void *pvParameters)
             esp_err_t dyp_ret = dyp_read_distance(&distance_cm, &dyp_handle);
             if (dyp_ret == ESP_OK) {
                 uint8_t water_left_percent = calculate_tank_water_percent(distance_cm);
+                g_ui_water_level_pct = water_left_percent;
                 ESP_LOGI("DYP_SENSOR", "Distance: %u cm, Water left: %u%%", distance_cm, water_left_percent);
             } else {
                 ESP_LOGW("DYP_SENSOR", "Distance read failed: %s", esp_err_to_name(dyp_ret));
@@ -374,7 +401,7 @@ void ST7789(void *pvParameters)
 
 	// Change SPI Clock Frequency
 	spi_clock_speed(40000000); // 40MHz, exactly double the standard 20MHz limitation
-	//spi_clock_speed(60000000); // 60MHz
+	// spi_clock_speed(80000000); // 80MHz
 
 	// Initialize SPI Hardware Pins
 	spi_master_init(&dev, LCD_SDA, LCD_SCK, LCD_CS, LCD_WR, LCD_RESET, LCD_BL);
@@ -413,13 +440,20 @@ void ST7789(void *pvParameters)
 
 	kinetic_os_set_pump_switch_cb(ui_pump_switch_cb);
 	kinetic_os_set_light_switch_cb(ui_light_switch_cb);
+    kinetic_os_set_fertilizer_a_switch_cb(ui_fert_a_switch_cb);
+    kinetic_os_set_fertilizer_b_switch_cb(ui_fert_b_switch_cb);
 
     kinetic_os_ui_init();
 
 	kinetic_os_set_pump_state(s_pump_on);
 	kinetic_os_set_light_state(s_grow_light_on);
+    kinetic_os_set_fertilizer_a_state(s_fert_a_on);
+    kinetic_os_set_fertilizer_b_state(s_fert_b_on);
 
     while(1) {
+        kinetic_os_set_temperature(g_ui_temperature_c);
+        kinetic_os_set_humidity(g_ui_humidity_pct);
+        kinetic_os_set_water_level(g_ui_water_level_pct);
         lv_timer_handler();
         vTaskDelay(pdMS_TO_TICKS(10));
         lv_tick_inc(10);
