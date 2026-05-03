@@ -7,11 +7,13 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_vfs.h"
 #include "driver/i2c_master.h"
+#include "driver/gpio.h"
 
 #include "st7789.h"
 #include "sht4x.h"
@@ -64,6 +66,8 @@ static volatile uint8_t g_ui_water_level_pct = 72U;
 // I2C Bus 0
 static i2c_master_bus_handle_t i2c_bus_touch_handle;
 static i2c_master_dev_handle_t ft6236_handle;
+static SemaphoreHandle_t touch_interrupt_sem = NULL;
+static volatile bool touch_data_ready = false;
 
 // I2C Bus 1
 static i2c_master_bus_handle_t i2c_bus_sensors_handle;
@@ -149,6 +153,7 @@ static bool tp_read_point(uint16_t *x, uint16_t *y) {
     esp_err_t ret = i2c_master_transmit_receive(ft6236_handle, &start_reg, 1, data, sizeof(data), 10);
 
     if (ret != ESP_OK || data[0] == 0) { // If no touch points
+        touch_data_ready = false;  // Clear flag when no touch detected
         return false;
     }
 
@@ -156,12 +161,40 @@ static bool tp_read_point(uint16_t *x, uint16_t *y) {
     // Most standard CST816S and FT6236 put X in [1] and [2], Y in [3] and [4]
     *x = ((data[1] & 0x0F) << 8) | data[2];
     *y = ((data[3] & 0x0F) << 8) | data[4];
+    touch_data_ready = false;  // Clear flag after reading
     
     return true;
 }
 
+// ISR handler for touch interrupt pin (TP_INT)
+static void IRAM_ATTR tp_interrupt_handler(void *arg)
+{
+    (void)arg;
+    // Set flag indicating touch data is available
+    touch_data_ready = true;
+    // Post semaphore from ISR to wake touch reading
+    if (touch_interrupt_sem != NULL) {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xSemaphoreGiveFromISR(touch_interrupt_sem, &xHigherPriorityTaskWoken);
+        if (xHigherPriorityTaskWoken == pdTRUE) {
+            portYIELD_FROM_ISR();
+        }
+    }
+}
+
 static void tp_init(void) {
     g_touch_ready = false;
+
+    // Create semaphore for touch interrupt signaling
+    if (touch_interrupt_sem == NULL) {
+        touch_interrupt_sem = xSemaphoreCreateBinary();
+        if (touch_interrupt_sem == NULL) {
+            ESP_LOGE(TAG, "Failed to create touch interrupt semaphore");
+        }
+    }
+
+    // Install GPIO ISR service (must be called once before adding handlers)
+    gpio_install_isr_service(0);
 
     // These 4 pins are the hardware JTAG pins (MTDO, MTCK, MTDI, MTMS) on the ESP32-S3!
     // They are reserved at boot. We MUST reset them to use them as GPIO/I2C.
@@ -180,13 +213,13 @@ static void tp_init(void) {
     };
     gpio_config(&out_conf);
     
-    // Interrupt Pin
+    // Interrupt Pin - configured for falling edge (active low)
     gpio_config_t in_conf = {
         .pin_bit_mask = (1ULL << TP_INT),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = 1,
         .pull_down_en = 0,
-        .intr_type = GPIO_INTR_DISABLE
+        .intr_type = GPIO_INTR_NEGEDGE  // Falling edge - touch controller pulls low on touch
     };
     gpio_config(&in_conf);
 
@@ -204,6 +237,11 @@ static void tp_init(void) {
         if (ret == ESP_OK) {
             g_touch_ready = true;
             ESP_LOGI(TAG, "Touch panel detected at address 0x%02x", FT6236_ADDR);
+            
+            // Register GPIO interrupt handler for touch interrupt pin
+            gpio_isr_handler_add(TP_INT, tp_interrupt_handler, NULL);
+            gpio_intr_enable(TP_INT);
+            ESP_LOGI(TAG, "Touch interrupt enabled on GPIO %d", TP_INT);
         } else {
             ESP_LOGW(TAG, "Touch panel not detected at address 0x%02x (err=%s)", FT6236_ADDR, esp_err_to_name(ret));
         }
@@ -311,6 +349,12 @@ static void my_touchpad_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data)
     (void)indev_drv;
 
     if (!g_touch_ready) {
+        data->state = LV_INDEV_STATE_REL;
+        return;
+    }
+
+    // Only read touch data if the interrupt flag is set (touch detected)
+    if (!touch_data_ready) {
         data->state = LV_INDEV_STATE_REL;
         return;
     }
