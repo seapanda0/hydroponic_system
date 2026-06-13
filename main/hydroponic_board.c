@@ -35,6 +35,7 @@
 // Function Prototypes
 static void routine_1_callback(bool is_on);
 static void routine_2_callback(bool is_on);
+static void routine_1_sample_timer_init(void);
 
 // Control Variables for Routines
 bool routine_1_active = false;
@@ -45,8 +46,11 @@ static void wait_for_touch(void);
 #define WAIT wait_for_touch()
 
 static const char *TAG = "ST7789";
-static const char *TAG_LIQUID_SENSOR = "Liquid Sensor";
 static const char *TAG_ROUTINE_1 = "Routine 1";
+
+#define ROUTINE_1_SAMPLE_PERIOD_US 1000U
+#define ROUTINE_1_SAMPLE_WINDOW 100U
+#define ROUTINE_1_STOP_THRESHOLD 70U
 
 // Map grow light control to a physical output pin.
 // Change this alias if your grow light relay is wired differently.
@@ -57,6 +61,9 @@ static bool s_grow_light_on = false;
 static bool s_fert_a_on = false;
 static bool s_fert_b_on = false;
 static bool g_touch_ready = false;
+static esp_timer_handle_t s_routine_1_sample_timer = NULL;
+static uint16_t s_routine_1_sample_count = 0;
+static uint16_t s_routine_1_high_count = 0;
 static volatile float g_ui_temperature_c = 24.0f;
 static volatile float g_ui_humidity_pct = 58.0f;
 static volatile uint8_t g_ui_water_level_pct = 72U;
@@ -525,13 +532,31 @@ void ST7789(void *pvParameters)
 // Web UI button pressed callback functions
 static void routine_1_callback(bool is_on)
 {
-    // s_pump_on = is_on;
-    // kinetic_os_set_pump_state(is_on);
+    (void)is_on;
     
     // If water is already present at the pipe
     if (gpio_get_level(WS2811_D) == 1){
         ESP_LOGI(TAG_ROUTINE_1, "Water is already in the pipe, routine 1 will not start!");
     }else {
+        routine_1_sample_timer_init();
+
+        s_routine_1_sample_count = 0;
+        s_routine_1_high_count = 0;
+
+        if (s_routine_1_sample_timer != NULL) {
+            if (esp_timer_is_active(s_routine_1_sample_timer)) {
+                esp_timer_stop(s_routine_1_sample_timer);
+            }
+            esp_err_t err = esp_timer_start_periodic(s_routine_1_sample_timer, ROUTINE_1_SAMPLE_PERIOD_US);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG_ROUTINE_1, "Failed to start routine 1 sample timer: %s", esp_err_to_name(err));
+                return;
+            }
+        } else {
+            ESP_LOGE(TAG_ROUTINE_1, "Routine 1 sample timer is not initialized");
+            return;
+        }
+
         gpio_set_level(FAN_GPIO, 1); // turn on the pump
         gpio_set_level(PUMP_GPIO, 1); // turn on the valve
         routine_1_active = true;
@@ -748,88 +773,73 @@ void Sensors_Init(){
     }
 }
 
-static TaskHandle_t gpio_task_handle = NULL;
-
-static void IRAM_ATTR gpio_isr_handler(void *arg)
-{
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-    if(routine_1_active){
-        vTaskNotifyGiveFromISR(
-            gpio_task_handle,
-            &xHigherPriorityTaskWoken);
-    }
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
-
-// init GPIO for liquid sensor and setup ISR
+// init GPIO for liquid sensor
 void init_liquid_sensor_gpio(){
 
     gpio_set_direction(WS2811_D, GPIO_MODE_INPUT);
-    gpio_set_intr_type(WS2811_D, GPIO_INTR_ANYEDGE);
-
-    gpio_isr_handler_add(
-        WS2811_D,
-        gpio_isr_handler,
-        NULL
-    );
+    gpio_set_intr_type(WS2811_D, GPIO_INTR_DISABLE);
 }
 
-// Liquid stable check
-// Callback function for esp one shot timer when a rising edge is detected on liquid sensor pin
-static void liquid_stability_timer_callback(void *arg){
-    ESP_LOGI(TAG, "One-shot timer fired!");
-    
-    // If pin is still 1, means water is stable within the period 
-    if(gpio_get_level(WS2811_D) ==  1){
-        gpio_set_level(FAN_GPIO, 0); // turn on the pump
-        gpio_set_level(PUMP_GPIO, 0); // turn on the valve
-        routine_1_active = false;
-
-    }
-}
-
-static void gpio_task(void *arg)
+static void routine_1_stop_outputs(void)
 {
-    // Delay for a short time to avoid transient condition
-    vTaskDelay(100);
+    gpio_set_level(FAN_GPIO, 0);
+    gpio_set_level(PUMP_GPIO, 0);
+    routine_1_active = false;
 
-    init_liquid_sensor_gpio();
+    if (s_routine_1_sample_timer != NULL && esp_timer_is_active(s_routine_1_sample_timer)) {
+        esp_timer_stop(s_routine_1_sample_timer);
+    }
 
-    const esp_timer_create_args_t timer_args = {
-        .callback = &liquid_stability_timer_callback,
-        .name = "liquid_sensor_50ms_delay"
-    };
-    esp_timer_handle_t timer_handle;
-    esp_timer_create(&timer_args, &timer_handle);
+    s_routine_1_sample_count = 0;
+    s_routine_1_high_count = 0;
+}
 
-    while (1) {
-        // Wait for notification
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        int level = gpio_get_level(WS2811_D);
+static void routine_1_sample_timer_callback(void *arg)
+{
+    (void)arg;
 
-        if (routine_1_active){
-            // Rising edge
-            if (level){
-                ESP_LOGI(TAG_LIQUID_SENSOR, "Rising edge");
-                if (esp_timer_is_active(timer_handle)){
-                    esp_timer_stop(timer_handle); // Stop the preexisting timer
-                }
-                esp_timer_start_once(timer_handle, 100000); // Start the one shot timer
-            }
-            else{
-                if (esp_timer_is_active(timer_handle)){
-                    esp_timer_stop(timer_handle); // Stop the preexisting timer
-                }
-                ESP_LOGI(TAG_LIQUID_SENSOR, "Falling edge");
-            }
+    if (!routine_1_active) {
+        return;
+    }
+
+    s_routine_1_sample_count++;
+    if (gpio_get_level(WS2811_D) == 1) {
+        s_routine_1_high_count++;
+    }
+
+    if (s_routine_1_sample_count >= ROUTINE_1_SAMPLE_WINDOW) {
+        if (s_routine_1_high_count > ROUTINE_1_STOP_THRESHOLD) {
+            ESP_LOGI(TAG_ROUTINE_1,
+                     "Liquid detected in %u/%u samples, stopping routine 1",
+                     (unsigned int)s_routine_1_high_count,
+                     (unsigned int)s_routine_1_sample_count);
+            routine_1_stop_outputs();
+        } else {
+            s_routine_1_sample_count = 0;
+            s_routine_1_high_count = 0;
         }
     }
+}
+
+static void routine_1_sample_timer_init(void)
+{
+    if (s_routine_1_sample_timer != NULL) {
+        return;
+    }
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = &routine_1_sample_timer_callback,
+        .name = "routine_1_liquid_sample"
+    };
+
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_routine_1_sample_timer));
 }
 
 void app_main(void)
 {
     gpio_install_isr_service(0);
+    init_liquid_sensor_gpio();
+    routine_1_sample_timer_init();
 
     // Start WiFi connection
     wifi_init_sta();
@@ -838,6 +848,4 @@ void app_main(void)
     // xTaskCreate(sensor_read_task, "sensor_read_task", 4096, NULL, 4, NULL);
 	
 	xTaskCreate(ST7789, "ST7789", 1024*6, NULL, 2, NULL);
-	
-    xTaskCreate(gpio_task, "GPIO Task", 5*1024, NULL, 15, &gpio_task_handle);
 }
