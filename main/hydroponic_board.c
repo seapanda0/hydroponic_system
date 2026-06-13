@@ -22,6 +22,14 @@
 #include "lvgl.h"
 #include "kinetic_os.h"
 
+// WiFi and HTTP Server imports
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "nvs_flash.h"
+#include "esp_netif.h"
+#include "esp_http_server.h"
+#include "wifi.h"
+
 #define INTERVAL 400
 static void wait_for_touch(void);
 #define WAIT wait_for_touch()
@@ -504,6 +512,432 @@ void ST7789(void *pvParameters)
     }
 }
 
+// Web UI HTML page with sleek dark mode style and dynamic Fetch API updates
+static const char* web_ui_html = 
+"<!DOCTYPE html>\n"
+"<html>\n"
+"<head>\n"
+"    <meta charset=\"utf-8\">\n"
+"    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+"    <title>Hydroponic Controller</title>\n"
+"    <link href=\"https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap\" rel=\"stylesheet\">\n"
+"    <style>\n"
+"        :root {\n"
+"            --bg-color: #0d0f0d;\n"
+"            --surface-color: #121412;\n"
+"            --surface-variant: #242623;\n"
+"            --primary-color: #8eff71;\n"
+"            --primary-dim: #2be800;\n"
+"            --text-color: #ffffff;\n"
+"            --text-dim: #a0a5a0;\n"
+"            --danger-color: #ff5a5a;\n"
+"        }\n"
+"        * {\n"
+"            box-sizing: border-box;\n"
+"            margin: 0;\n"
+"            padding: 0;\n"
+"        }\n"
+"        body {\n"
+"            font-family: 'Outfit', sans-serif;\n"
+"            background-color: var(--bg-color);\n"
+"            color: var(--text-color);\n"
+"            display: flex;\n"
+"            justify-content: center;\n"
+"            align-items: center;\n"
+"            min-height: 100vh;\n"
+"            padding: 20px;\n"
+"        }\n"
+"        .container {\n"
+"            background: var(--surface-color);\n"
+"            border: 1px solid var(--surface-variant);\n"
+"            border-radius: 24px;\n"
+"            padding: 40px 30px;\n"
+"            width: 100%;\n"
+"            max-width: 480px;\n"
+"            box-shadow: 0 20px 40px rgba(0,0,0,0.5);\n"
+"            text-align: center;\n"
+"            position: relative;\n"
+"            overflow: hidden;\n"
+"        }\n"
+"        .container::before {\n"
+"            content: '';\n"
+"            position: absolute;\n"
+"            top: -50%;\n"
+"            left: -50%;\n"
+"            width: 200%;\n"
+"            height: 200%;\n"
+"            background: radial-gradient(circle, rgba(142,255,113,0.05) 0%, transparent 60%);\n"
+"            pointer-events: none;\n"
+"        }\n"
+"        h1 {\n"
+"            font-size: 2.2rem;\n"
+"            font-weight: 800;\n"
+"            margin-bottom: 8px;\n"
+"            background: linear-gradient(135deg, #ffffff 30%, var(--primary-color) 100%);\n"
+"            -webkit-background-clip: text;\n"
+"            -webkit-text-fill-color: transparent;\n"
+"        }\n"
+"        .subtitle {\n"
+"            font-size: 1rem;\n"
+"            color: var(--text-dim);\n"
+"            margin-bottom: 30px;\n"
+"            font-weight: 300;\n"
+"        }\n"
+"        .sensor-grid {\n"
+"            display: grid;\n"
+"            grid-template-columns: repeat(3, 1fr);\n"
+"            gap: 12px;\n"
+"            margin-bottom: 30px;\n"
+"        }\n"
+"        .sensor-card {\n"
+"            background: rgba(255, 255, 255, 0.02);\n"
+"            border: 1px solid var(--surface-variant);\n"
+"            border-radius: 16px;\n"
+"            padding: 15px 10px;\n"
+"            transition: all 0.3s ease;\n"
+"        }\n"
+"        .sensor-card:hover {\n"
+"            border-color: rgba(142, 255, 113, 0.3);\n"
+"            background: rgba(142, 255, 113, 0.02);\n"
+"        }\n"
+"        .sensor-label {\n"
+"            font-size: 0.75rem;\n"
+"            color: var(--text-dim);\n"
+"            text-transform: uppercase;\n"
+"            letter-spacing: 1px;\n"
+"            margin-bottom: 6px;\n"
+"        }\n"
+"        .sensor-value {\n"
+"            font-size: 1.25rem;\n"
+"            font-weight: 600;\n"
+"            color: var(--primary-color);\n"
+"        }\n"
+"        .control-group {\n"
+"            display: flex;\n"
+"            flex-direction: column;\n"
+"            gap: 16px;\n"
+"        }\n"
+"        .btn {\n"
+"            background: var(--surface-variant);\n"
+"            border: 1px solid rgba(255,255,255,0.05);\n"
+"            border-radius: 16px;\n"
+"            color: var(--text-color);\n"
+"            padding: 18px 24px;\n"
+"            font-size: 1.1rem;\n"
+"            font-weight: 600;\n"
+"            cursor: pointer;\n"
+"            display: flex;\n"
+"            justify-content: space-between;\n"
+"            align-items: center;\n"
+"            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);\n"
+"            outline: none;\n"
+"        }\n"
+"        .btn:hover {\n"
+"            transform: translateY(-2px);\n"
+"            border-color: rgba(255,255,255,0.1);\n"
+"            box-shadow: 0 10px 20px rgba(0,0,0,0.2);\n"
+"        }\n"
+"        .btn.active {\n"
+"            background: rgba(142, 255, 113, 0.15);\n"
+"            border-color: var(--primary-color);\n"
+"            color: var(--primary-color);\n"
+"            box-shadow: 0 10px 25px rgba(142, 255, 113, 0.15);\n"
+"        }\n"
+"        .btn.active:hover {\n"
+"            box-shadow: 0 12px 30px rgba(142, 255, 113, 0.25);\n"
+"        }\n"
+"        .btn-status {\n"
+"            font-size: 0.85rem;\n"
+"            text-transform: uppercase;\n"
+"            letter-spacing: 1px;\n"
+"            padding: 4px 10px;\n"
+"            border-radius: 20px;\n"
+"            background: rgba(255,255,255,0.05);\n"
+"            color: var(--text-dim);\n"
+"            transition: all 0.3s ease;\n"
+"        }\n"
+"        .btn.active .btn-status {\n"
+"            background: var(--primary-color);\n"
+"            color: var(--bg-color);\n"
+"            font-weight: 800;\n"
+"        }\n"
+"        .icon {\n"
+"            margin-right: 10px;\n"
+"        }\n"
+"    </style>\n"
+"</head>\n"
+"<body>\n"
+"    <div class=\"container\">\n"
+"        <h1>Hydroponic System</h1>\n"
+"        <div class=\"subtitle\">WiFi Remote Control Panel</div>\n"
+"        \n"
+"        <div class=\"sensor-grid\">\n"
+"            <div class=\"sensor-card\">\n"
+"                <div class=\"sensor-label\">Temp</div>\n"
+"                <div class=\"sensor-value\" id=\"temp-val\">-- C</div>\n"
+"            </div>\n"
+"            <div class=\"sensor-card\">\n"
+"                <div class=\"sensor-label\">Humidity</div>\n"
+"                <div class=\"sensor-value\" id=\"humidity-val\">--%</div>\n"
+"            </div>\n"
+"            <div class=\"sensor-card\">\n"
+"                <div class=\"sensor-label\">Water</div>\n"
+"                <div class=\"sensor-value\" id=\"water-val\">--%</div>\n"
+"            </div>\n"
+"        </div>\n"
+"\n"
+"        <div class=\"control-group\">\n"
+"            <button class=\"btn\" id=\"btn-pump\" onclick=\"toggleDevice('pump')\">\n"
+"                <span><span class=\"icon\">💧</span>Circulation Pump</span>\n"
+"                <span class=\"btn-status\" id=\"status-pump\">OFF</span>\n"
+"            </button>\n"
+"            <button class=\"btn\" id=\"btn-light\" onclick=\"toggleDevice('light')\">\n"
+"                <span><span class=\"icon\">💡</span>Grow Light</span>\n"
+"                <span class=\"btn-status\" id=\"status-light\">OFF</span>\n"
+"            </button>\n"
+"        </div>\n"
+"    </div>\n"
+"\n"
+"    <script>\n"
+"        function updateUI(status) {\n"
+"            document.getElementById('temp-val').innerText = status.temp.toFixed(1) + ' C';\n"
+"            document.getElementById('humidity-val').innerText = status.humidity.toFixed(1) + '%';\n"
+"            document.getElementById('water-val').innerText = status.water + '%';\n"
+"            \n"
+"            const btnPump = document.getElementById('btn-pump');\n"
+"            const statusPump = document.getElementById('status-pump');\n"
+"            if (status.pump) {\n"
+"                btnPump.classList.add('active');\n"
+"                statusPump.innerText = 'ON';\n"
+"            } else {\n"
+"                btnPump.classList.remove('active');\n"
+"                statusPump.innerText = 'OFF';\n"
+"            }\n"
+"\n"
+"            const btnLight = document.getElementById('btn-light');\n"
+"            const statusLight = document.getElementById('status-light');\n"
+"            if (status.light) {\n"
+"                btnLight.classList.add('active');\n"
+"                statusLight.innerText = 'ON';\n"
+"            } else {\n"
+"                btnLight.classList.remove('active');\n"
+"                statusLight.innerText = 'OFF';\n"
+"            }\n"
+"        }\n"
+"\n"
+"        function fetchStatus() {\n"
+"            fetch('/api/status')\n"
+"                .then(response => response.json())\n"
+"                .then(data => {\n"
+"                    updateUI(data);\n"
+"                })\n"
+"                .catch(err => console.error('Error fetching status:', err));\n"
+"        }\n"
+"\n"
+"        function toggleDevice(device) {\n"
+"            fetch('/api/toggle?device=' + device, { method: 'POST' })\n"
+"                .then(response => response.json())\n"
+"                .then(data => {\n"
+"                    updateUI(data);\n"
+"                })\n"
+"                .catch(err => console.error('Error toggling device:', err));\n"
+"        }\n"
+"\n"
+"        // Poll status every 2 seconds\n"
+"        setInterval(fetchStatus, 2000);\n"
+"        // Initial fetch\n"
+"        fetchStatus();\n"
+"    </script>\n"
+"</body>\n"
+"</html>\n";
+
+// Web UI button pressed callback functions
+static void web_button_pump_callback(bool is_on)
+{
+    s_pump_on = is_on;
+    kinetic_os_set_pump_state(is_on);
+    ESP_LOGI("WEB_CB", "Web UI Callback: Circulation pump set to %s", is_on ? "ON" : "OFF");
+}
+
+static void web_button_light_callback(bool is_on)
+{
+    s_grow_light_on = is_on;
+    gpio_set_level(GROW_LIGHT_GPIO, is_on ? 1 : 0);
+    kinetic_os_set_light_state(is_on);
+    ESP_LOGI("WEB_CB", "Web UI Callback: Grow light set to %s", is_on ? "ON" : "OFF");
+}
+
+// HTTP Server endpoint handlers
+static esp_err_t root_get_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, web_ui_html, HTTPD_RESP_USE_STRLEN);
+}
+
+static const httpd_uri_t root_uri = {
+    .uri       = "/",
+    .method    = HTTP_GET,
+    .handler   = root_get_handler,
+    .user_ctx  = NULL
+};
+
+static esp_err_t status_get_handler(httpd_req_t *req)
+{
+    char json_response[128];
+    snprintf(json_response, sizeof(json_response),
+             "{\"pump\":%s,\"light\":%s,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
+             s_pump_on ? "true" : "false",
+             s_grow_light_on ? "true" : "false",
+             g_ui_temperature_c,
+             g_ui_humidity_pct,
+             g_ui_water_level_pct);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+}
+
+static const httpd_uri_t status_uri = {
+    .uri       = "/api/status",
+    .method    = HTTP_GET,
+    .handler   = status_get_handler,
+    .user_ctx  = NULL
+};
+
+static esp_err_t toggle_post_handler(httpd_req_t *req)
+{
+    char query[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char device[16];
+        if (httpd_query_key_value(query, "device", device, sizeof(device)) == ESP_OK) {
+            if (strcmp(device, "pump") == 0) {
+                web_button_pump_callback(!s_pump_on);
+            } else if (strcmp(device, "light") == 0) {
+                web_button_light_callback(!s_grow_light_on);
+            }
+        }
+    }
+    
+    char json_response[128];
+    snprintf(json_response, sizeof(json_response),
+             "{\"pump\":%s,\"light\":%s,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
+             s_pump_on ? "true" : "false",
+             s_grow_light_on ? "true" : "false",
+             g_ui_temperature_c,
+             g_ui_humidity_pct,
+             g_ui_water_level_pct);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+}
+
+static const httpd_uri_t toggle_uri = {
+    .uri       = "/api/toggle",
+    .method    = HTTP_POST,
+    .handler   = toggle_post_handler,
+    .user_ctx  = NULL
+};
+
+static httpd_handle_t start_webserver(void)
+{
+    httpd_handle_t server = NULL;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.lru_purge_enable = true;
+
+    ESP_LOGI("WEB_SERVER", "Starting server on port: '%d'", config.server_port);
+    if (httpd_start(&server, &config) == ESP_OK) {
+        ESP_LOGI("WEB_SERVER", "Registering URI handlers");
+        httpd_register_uri_handler(server, &root_uri);
+        httpd_register_uri_handler(server, &status_uri);
+        httpd_register_uri_handler(server, &toggle_uri);
+        return server;
+    }
+
+    ESP_LOGE("WEB_SERVER", "Error starting server!");
+    return NULL;
+}
+
+// WiFi Event Handler and Setup
+static int s_retry_num = 0;
+#define WIFI_MAXIMUM_RETRY 5
+
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                                int32_t event_id, void* event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (s_retry_num < WIFI_MAXIMUM_RETRY) {
+            esp_wifi_connect();
+            s_retry_num++;
+            ESP_LOGI("WIFI", "retry to connect to the AP");
+        } else {
+            ESP_LOGI("WIFI", "failed to connect to the AP");
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        ESP_LOGI("WIFI", "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+        s_retry_num = 0;
+        
+        // Update LVGL UI screen with connection status & SSID
+        kinetic_os_set_wifi_name(WIFI_SSID);
+        
+        // Start web server when connected
+        start_webserver();
+    }
+}
+
+static void wifi_init_sta(void)
+{
+    // Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+      ESP_ERROR_CHECK(nvs_flash_erase());
+      ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    ESP_LOGI("WIFI", "Initializing WiFi Station Mode...");
+    ESP_ERROR_CHECK(esp_netif_init());
+
+    esp_err_t err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(err);
+    }
+    
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    esp_event_handler_instance_t instance_any_id;
+    esp_event_handler_instance_t instance_got_ip;
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                        ESP_EVENT_ANY_ID,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        &instance_any_id));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                        IP_EVENT_STA_GOT_IP,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        &instance_got_ip));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASS,
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI("WIFI", "wifi_init_sta finished.");
+}
+
 void Sensors_Init(){
     esp_err_t ret = i2c_master_init_bus_sensors();
     if (ret != ESP_OK) {
@@ -532,10 +966,25 @@ void Sensors_Init(){
     }
 }
 
+void read_pin_task(void *args){
+    gpio_set_direction(WS2811_D, GPIO_MODE_INPUT);
+    int gpio_lvl = 0;
+    while(1){
+        gpio_lvl = gpio_get_level(WS2811_D);
+        ESP_LOGI("WS2811 PIN", "GPIO Level: %d", gpio_lvl);
+        vTaskDelay(50);
+    }
+}
+
 void app_main(void)
 {
+    // Start WiFi connection
+    wifi_init_sta();
+
 	Sensors_Init();
     xTaskCreate(sensor_read_task, "sensor_read_task", 4096, NULL, 4, NULL);
 	
 	xTaskCreate(ST7789, "ST7789", 1024*6, NULL, 2, NULL);
+
+    // xTaskCreate(read_pin_task, "read_pin_task", 4096, NULL, 5, NULL);
 }
