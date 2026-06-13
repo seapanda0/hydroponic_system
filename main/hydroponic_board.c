@@ -36,6 +36,7 @@ static void wait_for_touch(void);
 #define WAIT wait_for_touch()
 
 static const char *TAG = "ST7789";
+static const char *TAG_LIQUID_SENSOR = "Liquid Sensor";
 
 // Map grow light control to a physical output pin.
 // Change this alias if your grow light relay is wired differently.
@@ -202,8 +203,6 @@ static void tp_init(void) {
         }
     }
 
-    // Install GPIO ISR service (must be called once before adding handlers)
-    gpio_install_isr_service(0);
 
     // These 4 pins are the hardware JTAG pins (MTDO, MTCK, MTDI, MTMS) on the ESP32-S3!
     // They are reserved at boot. We MUST reset them to use them as GPIO/I2C.
@@ -728,25 +727,64 @@ void Sensors_Init(){
     }
 }
 
-void read_pin_task(void *args){
+static TaskHandle_t gpio_task_handle = NULL;
+
+static void IRAM_ATTR gpio_isr_handler(void *arg)
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    vTaskNotifyGiveFromISR(
+        gpio_task_handle,
+        &xHigherPriorityTaskWoken);
+
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+// init GPIO for liquid sensor and setup ISR
+void init_liquid_sensor_gpio(){
+
     gpio_set_direction(WS2811_D, GPIO_MODE_INPUT);
-    int gpio_lvl = 0;
-    while(1){
-        gpio_lvl = gpio_get_level(WS2811_D);
-        ESP_LOGI("WS2811 PIN", "GPIO Level: %d", gpio_lvl);
-        vTaskDelay(50);
+    gpio_set_intr_type(WS2811_D, GPIO_INTR_ANYEDGE);
+
+    gpio_isr_handler_add(
+        WS2811_D,
+        gpio_isr_handler,
+        NULL
+    );
+}
+
+static void gpio_task(void *arg)
+{
+    // Delay for a short time to avoid transient condition
+    vTaskDelay(100);
+
+    init_liquid_sensor_gpio();
+
+    while (1) {
+        // Wait for notification
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        int level = gpio_get_level(WS2811_D);
+
+        if (level) {
+            ESP_LOGI(TAG_LIQUID_SENSOR, "Rising edge\n");
+        } else {
+            ESP_LOGI(TAG_LIQUID_SENSOR, "Falling edge\n");
+        }
     }
 }
 
 void app_main(void)
 {
+    gpio_install_isr_service(0);
+
     // Start WiFi connection
     wifi_init_sta();
 
-	Sensors_Init();
-    xTaskCreate(sensor_read_task, "sensor_read_task", 4096, NULL, 4, NULL);
+	// Sensors_Init();
+    // xTaskCreate(sensor_read_task, "sensor_read_task", 4096, NULL, 4, NULL);
 	
 	xTaskCreate(ST7789, "ST7789", 1024*6, NULL, 2, NULL);
-
-    // xTaskCreate(read_pin_task, "read_pin_task", 4096, NULL, 5, NULL);
+	
+    xTaskCreate(gpio_task, "GPIO Task", 5*1024, NULL, 15, &gpio_task_handle);
 }
