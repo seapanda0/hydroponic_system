@@ -1,0 +1,10 @@
+#ifndef WIFI_H
+#define WIFI_H
+
+// Rename this file to wifi.h, or compilation process will fail
+
+// Change these to match your WiFi access point credentials
+#define WIFI_SSID "your_wifi_ssid"
+#define WIFI_PASS "your_wifi_password"
+
+#endif // WIFI_H
