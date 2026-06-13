@@ -514,14 +514,14 @@ void ST7789(void *pvParameters)
 }
 
 // Web UI button pressed callback functions
-static void web_button_pump_callback(bool is_on)
+static void routine_1_callback(bool is_on)
 {
     s_pump_on = is_on;
     kinetic_os_set_pump_state(is_on);
     ESP_LOGI("WEB_CB", "Web UI Callback: Circulation pump set to %s", is_on ? "ON" : "OFF");
 }
 
-static void web_button_light_callback(bool is_on)
+static void routine_2_callback(bool is_on)
 {
     s_grow_light_on = is_on;
     gpio_set_level(GROW_LIGHT_GPIO, is_on ? 1 : 0);
@@ -572,10 +572,10 @@ static esp_err_t toggle_post_handler(httpd_req_t *req)
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         char device[16];
         if (httpd_query_key_value(query, "device", device, sizeof(device)) == ESP_OK) {
-            if (strcmp(device, "pump") == 0) {
-                web_button_pump_callback(!s_pump_on);
-            } else if (strcmp(device, "light") == 0) {
-                web_button_light_callback(!s_grow_light_on);
+            if (strcmp(device, "routine_1") == 0) {
+                routine_1_callback(!s_pump_on);
+            } else if (strcmp(device, "routine_2") == 0) {
+                routine_2_callback(!s_grow_light_on);
             }
         }
     }
