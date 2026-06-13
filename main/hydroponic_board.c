@@ -34,7 +34,7 @@
 
 // Function Prototypes
 static void routine_1_callback(bool is_on);
-static void routine_2_callback(bool is_on);
+static void routine_2_callback(float nutrient_concentration);
 static void routine_1_sample_timer_init(void);
 
 // Control Variables for Routines
@@ -64,6 +64,7 @@ static bool g_touch_ready = false;
 static esp_timer_handle_t s_routine_1_sample_timer = NULL;
 static uint16_t s_routine_1_sample_count = 0;
 static uint16_t s_routine_1_high_count = 0;
+static float s_routine_2_nutrient_concentration = 1.0f;
 static volatile float g_ui_temperature_c = 24.0f;
 static volatile float g_ui_humidity_pct = 58.0f;
 static volatile uint8_t g_ui_water_level_pct = 72U;
@@ -566,12 +567,21 @@ static void routine_1_callback(bool is_on)
 
 }
 
-static void routine_2_callback(bool is_on)
+static void routine_2_callback(float nutrient_concentration)
 {
-    s_grow_light_on = is_on;
-    gpio_set_level(GROW_LIGHT_GPIO, is_on ? 1 : 0);
-    kinetic_os_set_light_state(is_on);
-    ESP_LOGI("WEB_CB", "Web UI Callback: Grow light set to %s", is_on ? "ON" : "OFF");
+    s_routine_2_nutrient_concentration = nutrient_concentration;
+    routine_2_active = true;
+    ESP_LOGI("WEB_CB", "Routine 2 nutrient concentration set to %.1f", nutrient_concentration);
+}
+
+static float normalize_nutrient_concentration(float nutrient_concentration)
+{
+    if (nutrient_concentration < 0.0f) {
+        nutrient_concentration = 0.0f;
+    }
+
+    int32_t tenths = (int32_t)(nutrient_concentration * 10.0f + 0.5f);
+    return (float)tenths / 10.0f;
 }
 
 // HTTP Server endpoint handlers
@@ -590,11 +600,12 @@ static const httpd_uri_t root_uri = {
 
 static esp_err_t status_get_handler(httpd_req_t *req)
 {
-    char json_response[128];
+    char json_response[160];
     snprintf(json_response, sizeof(json_response),
-             "{\"pump\":%s,\"light\":%s,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
-             s_pump_on ? "true" : "false",
-             s_grow_light_on ? "true" : "false",
+             "{\"routine_1\":%s,\"routine_2\":%s,\"nutrient_concentration\":%.1f,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
+             routine_1_active ? "true" : "false",
+             routine_2_active ? "true" : "false",
+             s_routine_2_nutrient_concentration,
              g_ui_temperature_c,
              g_ui_humidity_pct,
              g_ui_water_level_pct);
@@ -613,23 +624,33 @@ static const httpd_uri_t status_uri = {
 
 static esp_err_t toggle_post_handler(httpd_req_t *req)
 {
-    char query[64];
+    char query[96];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         char device[16];
         if (httpd_query_key_value(query, "device", device, sizeof(device)) == ESP_OK) {
             if (strcmp(device, "routine_1") == 0) {
-                routine_1_callback(!s_pump_on);
+                routine_1_callback(!routine_1_active);
             } else if (strcmp(device, "routine_2") == 0) {
-                routine_2_callback(!s_grow_light_on);
+                char concentration_str[16];
+                float nutrient_concentration = s_routine_2_nutrient_concentration;
+                if (httpd_query_key_value(query, "concentration", concentration_str, sizeof(concentration_str)) == ESP_OK) {
+                    char *endptr = NULL;
+                    float requested_concentration = strtof(concentration_str, &endptr);
+                    if (endptr != concentration_str) {
+                        nutrient_concentration = normalize_nutrient_concentration(requested_concentration);
+                    }
+                }
+                routine_2_callback(nutrient_concentration);
             }
         }
     }
     
-    char json_response[128];
+    char json_response[160];
     snprintf(json_response, sizeof(json_response),
-             "{\"pump\":%s,\"light\":%s,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
-             s_pump_on ? "true" : "false",
-             s_grow_light_on ? "true" : "false",
+             "{\"routine_1\":%s,\"routine_2\":%s,\"nutrient_concentration\":%.1f,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
+             routine_1_active ? "true" : "false",
+             routine_2_active ? "true" : "false",
+             s_routine_2_nutrient_concentration,
              g_ui_temperature_c,
              g_ui_humidity_pct,
              g_ui_water_level_pct);
