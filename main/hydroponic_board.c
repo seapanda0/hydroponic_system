@@ -23,6 +23,7 @@
 #include "lvgl.h"
 #include "kinetic_os.h"
 #include "webpage.h"
+#include "ba234.h"
 
 // WiFi and HTTP Server imports
 #include "esp_wifi.h"
@@ -40,6 +41,10 @@ static void routine_1_sample_timer_init(void);
 // Control Variables for Routines
 bool routine_1_active = false;
 bool routine_2_active = false;
+
+// BA234 Sensor data stuct
+ba234_sensor_data_t ba234_sensor_data;
+
 
 #define INTERVAL 400
 static void wait_for_touch(void);
@@ -856,8 +861,20 @@ static void routine_1_sample_timer_init(void)
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_routine_1_sample_timer));
 }
 
+void ba234_read_task(void * arg){
+    
+    // Initialize TDS/EC sensor
+    ba234_init();
+
+    while(1){
+        ba234_read_data(&ba234_sensor_data);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
 void app_main(void)
 {
+    // Initialize routine 1
     gpio_install_isr_service(0);
     init_liquid_sensor_gpio();
     routine_1_sample_timer_init();
@@ -868,5 +885,7 @@ void app_main(void)
 	// Sensors_Init();
     // xTaskCreate(sensor_read_task, "sensor_read_task", 4096, NULL, 4, NULL);
 	
+    xTaskCreate(ba234_read_task, "ba234_read_task", 1024*6, NULL, 2, NULL);
+
 	xTaskCreate(ST7789, "ST7789", 1024*6, NULL, 2, NULL);
 }
