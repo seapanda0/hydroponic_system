@@ -576,25 +576,51 @@ static void routine_1_callback(bool is_on)
 }
 
 void delay_off_routine_2_task(void *args){
+
+    uint32_t target_concentration = (uint32_t)args;
+    bool target_reached = false;
+
+    routine_2_active = true;
+    ESP_LOGI(TAG_ROUTINE_2, "Routine 2 task started, target concentration: %u", (unsigned int)target_concentration);
+
     if (ba234_sensor_status != ESP_OK){
         gpio_set_level(FAN_GPIO, 0);
         gpio_set_level(PUMP_GPIO, 0);
-        ESP_LOGI(TAG_ROUTINE_2, "BA234 Sensor Disconnected!");
+        ESP_LOGI(TAG_ROUTINE_2, "BA234 Sensor Disconnected!, will not initiate nutrient dosing!");
+        routine_2_active = false;    
         vTaskDelete(NULL);
         return;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    while(1){
+        ESP_LOGI(TAG_ROUTINE_2, "Reading EC sensor data...");
+        ba234_read_data(&ba234_sensor_data);
+        ESP_LOGI(TAG_ROUTINE_2, "Current EC: %u, target EC: %u", (unsigned int)ba234_sensor_data.ec, (unsigned int)target_concentration);
+        if (target_concentration > ba234_sensor_data.ec){
+            // Dose the fertilizer if current concentration is less than target
+            ESP_LOGI(TAG_ROUTINE_2, "Current EC is below target, dosing fertilizer...");
+            routine_3_callback(true);
+        }else{
+            ESP_LOGI(TAG_ROUTINE_2, "Target concentration reached, stopping dosing loop");
+            target_reached = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(3000));
+    }
+
+    // Target reached, turn off pump and valve
+    ESP_LOGI(TAG_ROUTINE_2, "Shutting down pump and valve, target_reached=%s", target_reached ? "true" : "false");
+    gpio_set_level(PUMP_GPIO, 0);
+    gpio_set_level(FAN_GPIO, 0);
     routine_2_active = false;
     vTaskDelete(NULL);
 }
 
-static void routine_2_callback(float nutrient_concentration)
-{
+static void routine_2_callback(float nutrient_concentration){
     s_routine_2_nutrient_concentration = nutrient_concentration;
-    routine_2_active = true;
     ESP_LOGI("WEB_CB", "Routine 2 nutrient concentration set to %.1f", nutrient_concentration);
-    xTaskCreate(delay_off_routine_2_task, "delay routine 2 off", 1024, NULL, 10, NULL);
+    uint32_t nutrient_concentration_int = (uint32_t)(nutrient_concentration * 1000.0);
+    xTaskCreate(delay_off_routine_2_task, "delay routine 2 off", 4096, (void *)nutrient_concentration_int, 10, NULL);
 }
 
 void delay_off_routine_3_callback(void *args){
@@ -919,10 +945,20 @@ void ba234_read_task(void * arg){
     // Initialize TDS/EC sensor
     ba234_sensor_status = ba234_init();
 
-    while(1){
-        ba234_read_data(&ba234_sensor_data);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+    if(ba234_sensor_status != ESP_OK){
+        vTaskDelete(NULL);
+        return;
     }
+
+    vTaskDelete(NULL);
+    return;
+
+    // while(1){
+        // ba234_read_data(&ba234_sensor_data);
+        // vTaskDelay(pdMS_TO_TICKS(50)); 
+        // there is no need for delay as sampling speed is limited by the sensor itself
+        // Average of 1880ms between samples
+    // }
 }
 
 void app_main(void)

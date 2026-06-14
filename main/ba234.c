@@ -67,8 +67,8 @@ esp_err_t ba234_init(void)
     uint8_t rx_buf[RX_BUF_SIZE] = {0};
     int rx_result = uart_read_bytes(UART_PORT_NUM, rx_buf, 6, pdMS_TO_TICKS(UART_READ_TIMEOUT_MS));
     
-    // If bytes received and in the sequence of AC 02 00 00 00 AE (sensor busy) as per datasheet
-    if (!(rx_result <= 0) && rx_buf[0] ==  0xAC && rx_buf[1] == 0x02){
+    // If bytes received and in the sequence of AC 02 00 00 00 AE (sensor busy) or 0xAA (normal data) as per datasheet
+    if (!(rx_result <= 0) && (rx_buf[0] ==  0xAC || rx_buf[0] ==  0xAA )){
         ba234_initialized = true;
         ESP_LOGI(TAG, "BA234 UART initialized successfully");
         uart_flush(UART_PORT_NUM);
