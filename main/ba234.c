@@ -63,12 +63,22 @@ esp_err_t ba234_init(void)
     uint8_t tx_buf[6] = {0xA0, 0x00, 0x00, 0x00, 0x00, 0xA0};
     uart_write_bytes(UART_PORT_NUM, tx_buf, 6);
     vTaskDelay(pdMS_TO_TICKS(100));
-    uart_flush(UART_PORT_NUM);
 
-
-    ba234_initialized = true;
-    ESP_LOGI(TAG, "BA234 UART initialized successfully");
-    return ESP_OK;
+    uint8_t rx_buf[RX_BUF_SIZE] = {0};
+    int rx_result = uart_read_bytes(UART_PORT_NUM, rx_buf, 6, pdMS_TO_TICKS(UART_READ_TIMEOUT_MS));
+    
+    // If bytes received and in the sequence of AC 02 00 00 00 AE (sensor busy) as per datasheet
+    if (!(rx_result <= 0) && rx_buf[0] ==  0xAC && rx_buf[1] == 0x02){
+        ba234_initialized = true;
+        ESP_LOGI(TAG, "BA234 UART initialized successfully");
+        uart_flush(UART_PORT_NUM);
+        return ESP_OK;
+    }else{
+        ba234_initialized = false;
+        ESP_LOGW(TAG, "BA234 intialization failed!");
+        uart_flush(UART_PORT_NUM);
+        return ESP_FAIL;
+    }
 }
 
 /**

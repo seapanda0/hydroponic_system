@@ -45,8 +45,8 @@ bool routine_2_active = false;
 bool routine_3_active = false;
 
 // BA234 Sensor data stuct
+esp_err_t ba234_sensor_status = false;
 ba234_sensor_data_t ba234_sensor_data;
-
 
 #define INTERVAL 400
 static void wait_for_touch(void);
@@ -54,6 +54,7 @@ static void wait_for_touch(void);
 
 static const char *TAG = "ST7789";
 static const char *TAG_ROUTINE_1 = "Routine 1";
+static const char *TAG_ROUTINE_2 = "Routine 2";
 
 #define ROUTINE_1_SAMPLE_PERIOD_US 1000U
 #define ROUTINE_1_SAMPLE_WINDOW 100U
@@ -575,6 +576,14 @@ static void routine_1_callback(bool is_on)
 }
 
 void delay_off_routine_2_task(void *args){
+    if (ba234_sensor_status != ESP_OK){
+        gpio_set_level(FAN_GPIO, 0);
+        gpio_set_level(PUMP_GPIO, 0);
+        ESP_LOGI(TAG_ROUTINE_2, "BA234 Sensor Disconnected!");
+        vTaskDelete(NULL);
+        return;
+    }
+
     vTaskDelay(pdMS_TO_TICKS(5000));
     routine_2_active = false;
     vTaskDelete(NULL);
@@ -908,7 +917,7 @@ static void routine_1_sample_timer_init(void)
 void ba234_read_task(void * arg){
     
     // Initialize TDS/EC sensor
-    ba234_init();
+    ba234_sensor_status = ba234_init();
 
     while(1){
         ba234_read_data(&ba234_sensor_data);
