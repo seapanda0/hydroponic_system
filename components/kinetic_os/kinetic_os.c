@@ -37,6 +37,14 @@ static kinetic_os_switch_cb_t user_fert_b_cb = NULL;
 static lv_obj_t * p1_temp_val;
 static lv_obj_t * p1_humidity_val;
 static lv_obj_t * p1_water_level_val;
+static lv_obj_t * p1_tds_val;
+static lv_obj_t * p1_ec_val;
+
+// Page 2 dynamic references for TDS/EC
+static lv_obj_t * p2_tds_label;
+static lv_obj_t * p2_ec_label;
+static lv_obj_t * p2_tds_arc;
+static lv_obj_t * p2_ec_arc;
 
 // Page 2 Dynamic Elements
 static lv_obj_t * p2_auto_concentration_btn;
@@ -294,6 +302,35 @@ void kinetic_os_set_water_level(uint8_t pct) {
     lv_label_set_text_fmt(p1_water_level_val, "%u%%", (unsigned)pct);
 }
 
+void kinetic_os_set_tds(uint16_t ppm) {
+    if(p1_tds_val) {
+        lv_label_set_text_fmt(p1_tds_val, "%u", (unsigned)ppm);
+    }
+    if(p2_tds_label) {
+        lv_label_set_text_fmt(p2_tds_label, "%u", (unsigned)ppm);
+    }
+    if(p2_tds_arc) {
+        uint16_t v = ppm > 1000 ? 1000 : ppm;
+        lv_arc_set_value(p2_tds_arc, v);
+    }
+}
+
+void kinetic_os_set_ec(float ms_per_cm) {
+    if(ms_per_cm < 0.0f) ms_per_cm = 0.0f;
+    if(p1_ec_val) {
+        lv_label_set_text_fmt(p1_ec_val, "%.2f", ms_per_cm);
+    }
+    if(p2_ec_label) {
+        lv_label_set_text_fmt(p2_ec_label, "%.2f", ms_per_cm);
+    }
+    if(p2_ec_arc) {
+        int v = (int)(ms_per_cm * 10.0f + 0.5f);
+        if(v < 0) v = 0;
+        if(v > 50) v = 50;
+        lv_arc_set_value(p2_ec_arc, v);
+    }
+}
+
 void kinetic_os_set_pump_switch_cb(kinetic_os_switch_cb_t cb) { user_pump_cb = cb; }
 
 void kinetic_os_set_light_switch_cb(kinetic_os_switch_cb_t cb) { user_light_cb = cb; }
@@ -447,11 +484,11 @@ static void build_page1(void) {
 #endif
     lv_obj_align(c3_u, LV_ALIGN_TOP_RIGHT, 2, -2);
 
-    lv_obj_t * c3_v = lv_label_create(c3);
-    lv_label_set_text(c3_v, "342");
-    lv_obj_set_style_text_color(c3_v, KINETIC_COLOR_PRIMARY, 0);
-    lv_obj_set_style_text_font(c3_v, FONT_BASE, 0);
-    lv_obj_align(c3_v, LV_ALIGN_BOTTOM_LEFT, -4, 4);
+    p1_tds_val = lv_label_create(c3);
+    lv_label_set_text(p1_tds_val, "342");
+    lv_obj_set_style_text_color(p1_tds_val, KINETIC_COLOR_PRIMARY, 0);
+    lv_obj_set_style_text_font(p1_tds_val, FONT_BASE, 0);
+    lv_obj_align(p1_tds_val, LV_ALIGN_BOTTOM_LEFT, -4, 4);
 
     lv_obj_t * c4 = lv_obj_create(grid);
     lv_obj_set_size(c4, card_w, card_h);
@@ -479,11 +516,11 @@ static void build_page1(void) {
 #endif
     lv_obj_align(c4_u, LV_ALIGN_TOP_RIGHT, 2, -2);
 
-    lv_obj_t * c4_v = lv_label_create(c4);
-    lv_label_set_text(c4_v, "0.8");
-    lv_obj_set_style_text_color(c4_v, KINETIC_COLOR_TERTIARY, 0);
-    lv_obj_set_style_text_font(c4_v, FONT_BASE, 0);
-    lv_obj_align(c4_v, LV_ALIGN_BOTTOM_LEFT, -4, 4);
+    p1_ec_val = lv_label_create(c4);
+    lv_label_set_text(p1_ec_val, "0.8");
+    lv_obj_set_style_text_color(p1_ec_val, KINETIC_COLOR_TERTIARY, 0);
+    lv_obj_set_style_text_font(p1_ec_val, FONT_BASE, 0);
+    lv_obj_align(p1_ec_val, LV_ALIGN_BOTTOM_LEFT, -4, 4);
 
     lv_obj_t * c5 = lv_obj_create(grid);
     lv_obj_set_size(c5, card_w, card_h);
@@ -564,36 +601,36 @@ static void build_page2(void) {
     lv_obj_set_style_radius(tds, 8, 0);
     lv_obj_clear_flag(tds, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t * t1 = lv_label_create(tds);
-    lv_label_set_text(t1, "TDS " ICON_OPACITY);
-    lv_obj_set_style_text_color(t1, KINETIC_COLOR_TEXT_DIM, 0);
-    lv_obj_align(t1, LV_ALIGN_TOP_LEFT, -5, -5);
-
+    p2_tds_label = lv_label_create(tds);
+    lv_label_set_text(p2_tds_label, "342");
+    lv_obj_set_style_text_color(p2_tds_label, KINETIC_COLOR_PRIMARY, 0);
+    lv_obj_set_style_text_font(p2_tds_label, FONT_BASE, 0);
+    lv_obj_align(p2_tds_label, LV_ALIGN_CENTER, 0, 15);
     lv_obj_t * u1 = lv_label_create(tds);
     lv_label_set_text(u1, "PPM");
     lv_obj_set_style_text_color(u1, KINETIC_COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(u1, FONT_BASE, 0);
     lv_obj_align(u1, LV_ALIGN_TOP_RIGHT, 0, -5);
 
-    lv_obj_t * v1 = lv_label_create(tds);
-    lv_label_set_text(v1, "342");
-    lv_obj_set_style_text_color(v1, KINETIC_COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(v1, FONT_BASE, 0);
-    lv_obj_align(v1, LV_ALIGN_CENTER, 0, 15);
+    p2_tds_label = lv_label_create(tds);
+    lv_label_set_text(p2_tds_label, "342");
+    lv_obj_set_style_text_color(p2_tds_label, KINETIC_COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(p2_tds_label, FONT_BASE, 0);
+    lv_obj_align(p2_tds_label, LV_ALIGN_CENTER, 0, 15);
 
-    lv_obj_t * a1 = lv_arc_create(tds);
-    lv_obj_set_size(a1, 64, 64);
-    lv_obj_align(a1, LV_ALIGN_BOTTOM_MID, 0, 30);
-    lv_arc_set_bg_angles(a1, 150, 30);
-    lv_arc_set_range(a1, 0, 1000); // Expanded range for TDS
-    lv_arc_set_value(a1, 342);
-    lv_obj_set_style_arc_color(a1, KINETIC_COLOR_PRIMARY, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(a1, 4, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(a1, 4, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(a1, LV_OPA_COVER, LV_PART_KNOB);
-    lv_obj_set_style_bg_color(a1, KINETIC_COLOR_PRIMARY, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(a1, 4, LV_PART_KNOB);
-    lv_obj_add_event_cb(a1, arc_tds_event_cb, LV_EVENT_VALUE_CHANGED, v1);
+    p2_tds_arc = lv_arc_create(tds);
+    lv_obj_set_size(p2_tds_arc, 64, 64);
+    lv_obj_align(p2_tds_arc, LV_ALIGN_BOTTOM_MID, 0, 30);
+    lv_arc_set_bg_angles(p2_tds_arc, 150, 30);
+    lv_arc_set_range(p2_tds_arc, 0, 1000); // Expanded range for TDS
+    lv_arc_set_value(p2_tds_arc, 342);
+    lv_obj_set_style_arc_color(p2_tds_arc, KINETIC_COLOR_PRIMARY, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(p2_tds_arc, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(p2_tds_arc, 4, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(p2_tds_arc, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_bg_color(p2_tds_arc, KINETIC_COLOR_PRIMARY, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(p2_tds_arc, 4, LV_PART_KNOB);
+    lv_obj_add_event_cb(p2_tds_arc, arc_tds_event_cb, LV_EVENT_VALUE_CHANGED, p2_tds_label);
 
     // EC Card
     lv_obj_t * ec = lv_obj_create(left);
@@ -633,25 +670,25 @@ static void build_page2(void) {
     lv_obj_set_style_text_font(u2, FONT_BASE, 0);
     lv_obj_align(u2, LV_ALIGN_TOP_RIGHT, 0, -5);
 
-    lv_obj_t * v2 = lv_label_create(ec);
-    lv_label_set_text(v2, "0.8");
-    lv_obj_set_style_text_color(v2, KINETIC_COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(v2, FONT_BASE, 0);
-    lv_obj_align(v2, LV_ALIGN_CENTER, 0, 15);
+    p2_ec_label = lv_label_create(ec);
+    lv_label_set_text(p2_ec_label, "0.8");
+    lv_obj_set_style_text_color(p2_ec_label, KINETIC_COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(p2_ec_label, FONT_BASE, 0);
+    lv_obj_align(p2_ec_label, LV_ALIGN_CENTER, 0, 15);
 
-    lv_obj_t * a2 = lv_arc_create(ec);
-    lv_obj_set_size(a2, 64, 64);
-    lv_obj_align(a2, LV_ALIGN_BOTTOM_MID, 0, 30);
-    lv_arc_set_bg_angles(a2, 150, 30);
-    lv_arc_set_range(a2, 0, 50); // 0.0 to 5.0 scaled
-    lv_arc_set_value(a2, 8); // 0.8 default
-    lv_obj_set_style_arc_color(a2, KINETIC_COLOR_TERTIARY, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(a2, 4, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(a2, 4, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(a2, LV_OPA_COVER, LV_PART_KNOB);
-    lv_obj_set_style_bg_color(a2, KINETIC_COLOR_TERTIARY, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(a2, 4, LV_PART_KNOB);
-    lv_obj_add_event_cb(a2, arc_ec_event_cb, LV_EVENT_VALUE_CHANGED, v2);
+    p2_ec_arc = lv_arc_create(ec);
+    lv_obj_set_size(p2_ec_arc, 64, 64);
+    lv_obj_align(p2_ec_arc, LV_ALIGN_BOTTOM_MID, 0, 30);
+    lv_arc_set_bg_angles(p2_ec_arc, 150, 30);
+    lv_arc_set_range(p2_ec_arc, 0, 50); // 0.0 to 5.0 scaled
+    lv_arc_set_value(p2_ec_arc, 8); // 0.8 default
+    lv_obj_set_style_arc_color(p2_ec_arc, KINETIC_COLOR_TERTIARY, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(p2_ec_arc, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(p2_ec_arc, 4, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(p2_ec_arc, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_bg_color(p2_ec_arc, KINETIC_COLOR_TERTIARY, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(p2_ec_arc, 4, LV_PART_KNOB);
+    lv_obj_add_event_cb(p2_ec_arc, arc_ec_event_cb, LV_EVENT_VALUE_CHANGED, p2_ec_label);
 
     // Right Column (Auto Concentration Button)
     p2_auto_concentration_btn = lv_btn_create(grid);

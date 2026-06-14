@@ -532,6 +532,14 @@ void ST7789(void *pvParameters)
         kinetic_os_set_temperature(g_ui_temperature_c);
         kinetic_os_set_humidity(g_ui_humidity_pct);
         kinetic_os_set_water_level(g_ui_water_level_pct);
+        // Update chemistry metrics if BA234 sensor is available
+        if (ba234_sensor_status == ESP_OK) {
+            // TDS is provided in ppm
+            kinetic_os_set_tds(ba234_sensor_data.tds);
+            // EC is provided in µS/cm by the sensor; convert to mS/cm for display
+            float ec_ms = (float)ba234_sensor_data.ec / 1000.0f;
+            kinetic_os_set_ec(ec_ms);
+        }
         lv_timer_handler();
         vTaskDelay(pdMS_TO_TICKS(10));
         lv_tick_inc(10);
