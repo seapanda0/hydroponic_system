@@ -36,11 +36,13 @@
 // Function Prototypes
 static void routine_1_callback(bool is_on);
 static void routine_2_callback(float nutrient_concentration);
+static void routine_3_callback(bool is_on);
 static void routine_1_sample_timer_init(void);
 
 // Control Variables for Routines
 bool routine_1_active = false;
 bool routine_2_active = false;
+bool routine_3_active = false;
 
 // BA234 Sensor data stuct
 ba234_sensor_data_t ba234_sensor_data;
@@ -572,11 +574,49 @@ static void routine_1_callback(bool is_on)
 
 }
 
+void delay_off_routine_2_task(void *args){
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    routine_2_active = false;
+    vTaskDelete(NULL);
+}
+
 static void routine_2_callback(float nutrient_concentration)
 {
     s_routine_2_nutrient_concentration = nutrient_concentration;
     routine_2_active = true;
     ESP_LOGI("WEB_CB", "Routine 2 nutrient concentration set to %.1f", nutrient_concentration);
+    xTaskCreate(delay_off_routine_2_task, "delay routine 2 off", 1024, NULL, 10, NULL);
+}
+
+void delay_off_routine_3_callback(void *args){
+    gpio_set_level(FAN_GPIO, 0);
+    gpio_set_level(PUMP_GPIO, 0);
+
+    routine_3_active = false;
+}
+
+static void routine_3_callback(bool is_on)
+{
+    (void)is_on;
+
+    ESP_LOGI("WEB_CB", "Routine 3 Called");
+    routine_3_active = true;
+
+    esp_timer_handle_t timer_routine3;
+
+    const esp_timer_create_args_t timer_routine3_args = {
+        .callback = delay_off_routine_3_callback,
+        .arg = NULL,
+        .name = "delay_off_routine_3"
+    };
+
+    ESP_ERROR_CHECK(esp_timer_create(&timer_routine3_args, &timer_routine3));
+    
+    gpio_set_level(FAN_GPIO, 1);
+    gpio_set_level(PUMP_GPIO, 1);
+    
+    // 200ms shot for the nutrient dose
+    ESP_ERROR_CHECK(esp_timer_start_once(timer_routine3, 500000));
 }
 
 static float normalize_nutrient_concentration(float nutrient_concentration)
@@ -605,11 +645,12 @@ static const httpd_uri_t root_uri = {
 
 static esp_err_t status_get_handler(httpd_req_t *req)
 {
-    char json_response[160];
+    char json_response[180];
     snprintf(json_response, sizeof(json_response),
-             "{\"routine_1\":%s,\"routine_2\":%s,\"nutrient_concentration\":%.1f,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
+             "{\"routine_1\":%s,\"routine_2\":%s,\"routine_3\":%s,\"nutrient_concentration\":%.1f,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
              routine_1_active ? "true" : "false",
              routine_2_active ? "true" : "false",
+             routine_3_active ? "true" : "false",
              s_routine_2_nutrient_concentration,
              g_ui_temperature_c,
              g_ui_humidity_pct,
@@ -646,15 +687,18 @@ static esp_err_t toggle_post_handler(httpd_req_t *req)
                     }
                 }
                 routine_2_callback(nutrient_concentration);
+            } else if (strcmp(device, "routine_3") == 0) {
+                routine_3_callback(!routine_3_active);
             }
         }
     }
     
-    char json_response[160];
+    char json_response[180];
     snprintf(json_response, sizeof(json_response),
-             "{\"routine_1\":%s,\"routine_2\":%s,\"nutrient_concentration\":%.1f,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
+             "{\"routine_1\":%s,\"routine_2\":%s,\"routine_3\":%s,\"nutrient_concentration\":%.1f,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
              routine_1_active ? "true" : "false",
              routine_2_active ? "true" : "false",
+             routine_3_active ? "true" : "false",
              s_routine_2_nutrient_concentration,
              g_ui_temperature_c,
              g_ui_humidity_pct,
