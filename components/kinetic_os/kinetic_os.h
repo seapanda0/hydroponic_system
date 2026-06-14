@@ -37,7 +37,7 @@ void kinetic_os_set_water_level(uint8_t pct);
 
 // Water chemistry display API
 void kinetic_os_set_tds(uint16_t ppm);
-void kinetic_os_set_ec(float ms_per_cm);
+void kinetic_os_set_ec(uint32_t us_per_cm);
 
 // Event hooks for broadcasting UI taps back to ESP
 typedef void (*kinetic_os_switch_cb_t)(bool is_on);

@@ -315,18 +315,16 @@ void kinetic_os_set_tds(uint16_t ppm) {
     }
 }
 
-void kinetic_os_set_ec(float ms_per_cm) {
-    if(ms_per_cm < 0.0f) ms_per_cm = 0.0f;
+void kinetic_os_set_ec(uint32_t us_per_cm) {
     if(p1_ec_val) {
-        lv_label_set_text_fmt(p1_ec_val, "%.2f", ms_per_cm);
+        lv_label_set_text_fmt(p1_ec_val, "%u", (unsigned)us_per_cm);
     }
     if(p2_ec_label) {
-        lv_label_set_text_fmt(p2_ec_label, "%.2f", ms_per_cm);
+        lv_label_set_text_fmt(p2_ec_label, "%u", (unsigned)us_per_cm);
     }
     if(p2_ec_arc) {
-        int v = (int)(ms_per_cm * 10.0f + 0.5f);
-        if(v < 0) v = 0;
-        if(v > 50) v = 50;
+        uint32_t v = us_per_cm;
+        if(v > 5000U) v = 5000U;
         lv_arc_set_value(p2_ec_arc, v);
     }
 }
@@ -509,7 +507,7 @@ static void build_page1(void) {
     lv_obj_align(c4_t, LV_ALIGN_TOP_LEFT, -4, -2);
 
     lv_obj_t * c4_u = lv_label_create(c4);
-    lv_label_set_text(c4_u, "mS/cm");
+    lv_label_set_text(c4_u, "uS/cm");
     lv_obj_set_style_text_color(c4_u, KINETIC_COLOR_TEXT_DIM, 0);
 #if LV_FONT_MONTSERRAT_12
     lv_obj_set_style_text_font(c4_u, &lv_font_montserrat_12, 0);
@@ -603,17 +601,6 @@ static void build_page2(void) {
 
     p2_tds_label = lv_label_create(tds);
     lv_label_set_text(p2_tds_label, "342");
-    lv_obj_set_style_text_color(p2_tds_label, KINETIC_COLOR_PRIMARY, 0);
-    lv_obj_set_style_text_font(p2_tds_label, FONT_BASE, 0);
-    lv_obj_align(p2_tds_label, LV_ALIGN_CENTER, 0, 15);
-    lv_obj_t * u1 = lv_label_create(tds);
-    lv_label_set_text(u1, "PPM");
-    lv_obj_set_style_text_color(u1, KINETIC_COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(u1, FONT_BASE, 0);
-    lv_obj_align(u1, LV_ALIGN_TOP_RIGHT, 0, -5);
-
-    p2_tds_label = lv_label_create(tds);
-    lv_label_set_text(p2_tds_label, "342");
     lv_obj_set_style_text_color(p2_tds_label, KINETIC_COLOR_TEXT, 0);
     lv_obj_set_style_text_font(p2_tds_label, FONT_BASE, 0);
     lv_obj_align(p2_tds_label, LV_ALIGN_CENTER, 0, 15);
@@ -680,8 +667,8 @@ static void build_page2(void) {
     lv_obj_set_size(p2_ec_arc, 64, 64);
     lv_obj_align(p2_ec_arc, LV_ALIGN_BOTTOM_MID, 0, 30);
     lv_arc_set_bg_angles(p2_ec_arc, 150, 30);
-    lv_arc_set_range(p2_ec_arc, 0, 50); // 0.0 to 5.0 scaled
-    lv_arc_set_value(p2_ec_arc, 8); // 0.8 default
+    lv_arc_set_range(p2_ec_arc, 0, 5000);
+    lv_arc_set_value(p2_ec_arc, 800);
     lv_obj_set_style_arc_color(p2_ec_arc, KINETIC_COLOR_TERTIARY, LV_PART_INDICATOR);
     lv_obj_set_style_arc_width(p2_ec_arc, 4, LV_PART_INDICATOR);
     lv_obj_set_style_arc_width(p2_ec_arc, 4, LV_PART_MAIN);

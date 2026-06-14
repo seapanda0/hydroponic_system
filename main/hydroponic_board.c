@@ -38,6 +38,7 @@ static void routine_1_callback(bool is_on);
 static void routine_2_callback(float nutrient_concentration);
 static void routine_3_callback(bool is_on);
 static void routine_1_sample_timer_init(void);
+static esp_err_t ba234_update_sensor_data(void);
 
 // Control Variables for Routines
 bool routine_1_active = false;
@@ -45,8 +46,10 @@ bool routine_2_active = false;
 bool routine_3_active = false;
 
 // BA234 Sensor data stuct
-esp_err_t ba234_sensor_status = false;
+esp_err_t ba234_sensor_status = ESP_ERR_INVALID_STATE;
 ba234_sensor_data_t ba234_sensor_data;
+
+#define BA234_BACKGROUND_SAMPLE_DELAY_MS 50U
 
 #define INTERVAL 400
 static void wait_for_touch(void);
@@ -536,9 +539,8 @@ void ST7789(void *pvParameters)
         if (ba234_sensor_status == ESP_OK) {
             // TDS is provided in ppm
             kinetic_os_set_tds(ba234_sensor_data.tds);
-            // EC is provided in µS/cm by the sensor; convert to mS/cm for display
-            float ec_ms = (float)ba234_sensor_data.ec / 1000.0f;
-            kinetic_os_set_ec(ec_ms);
+            // EC is provided in us/cm by the sensor
+            kinetic_os_set_ec(ba234_sensor_data.ec);
         }
         lv_timer_handler();
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -602,7 +604,8 @@ void delay_off_routine_2_task(void *args){
 
     while(1){
         ESP_LOGI(TAG_ROUTINE_2, "Reading EC sensor data...");
-        ba234_read_data(&ba234_sensor_data);
+        ba234_update_sensor_data();
+        
         ESP_LOGI(TAG_ROUTINE_2, "Current EC: %u, target EC: %u", (unsigned int)ba234_sensor_data.ec, (unsigned int)target_concentration);
         if (target_concentration > ba234_sensor_data.ec){
             // Dose the fertilizer if current concentration is less than target
@@ -670,6 +673,16 @@ static float normalize_nutrient_concentration(float nutrient_concentration)
 
     int32_t tenths = (int32_t)(nutrient_concentration * 10.0f + 0.5f);
     return (float)tenths / 10.0f;
+}
+
+static esp_err_t ba234_update_sensor_data(void)
+{
+    esp_err_t err = ba234_read_data(&ba234_sensor_data);
+    if (err == ESP_OK) {
+        kinetic_os_set_tds(ba234_sensor_data.tds);
+        kinetic_os_set_ec(ba234_sensor_data.ec);
+    }
+    return err;
 }
 
 // HTTP Server endpoint handlers
@@ -958,15 +971,14 @@ void ba234_read_task(void * arg){
         return;
     }
 
-    vTaskDelete(NULL);
-    return;
-
-    // while(1){
-        // ba234_read_data(&ba234_sensor_data);
-        // vTaskDelay(pdMS_TO_TICKS(50)); 
-        // there is no need for delay as sampling speed is limited by the sensor itself
-        // Average of 1880ms between samples
-    // }
+    while(1){
+        if (!routine_3_active) {
+            ba234_update_sensor_data();
+        }
+        vTaskDelay(pdMS_TO_TICKS(BA234_BACKGROUND_SAMPLE_DELAY_MS)); 
+        // There is no need for a long delay as sampling speed is limited by the sensor itself.
+        // Average of 1880ms between samples.
+    }
 }
 
 void app_main(void)
