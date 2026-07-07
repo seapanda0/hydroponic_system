@@ -51,6 +51,9 @@ ba234_sensor_data_t ba234_sensor_data;
 
 #define BA234_BACKGROUND_SAMPLE_DELAY_MS 50U
 
+#define LOG_SHT40_SENSOR  1   // temperature and humidity readings
+#define LOG_DYP_SENSOR    1   // ultrasonic distance and water level readings
+
 #define INTERVAL 400
 static void wait_for_touch(void);
 #define WAIT wait_for_touch()
@@ -429,9 +432,13 @@ static void sensor_read_task(void *pvParameters)
                 }
                 g_ui_temperature_c = temperature;
                 g_ui_humidity_pct = humidity_pct;
+#if LOG_SHT40_SENSOR
                 ESP_LOGI("SHT40", "Temperature: %.2f C, Humidity: %.2f %%", temperature, humidity);
+#endif
             } else {
+#if LOG_SHT40_SENSOR
                 ESP_LOGW("SHT40", "Read failed: %s", esp_err_to_name(ret));
+#endif
             }
         }
 
@@ -441,9 +448,13 @@ static void sensor_read_task(void *pvParameters)
             if (dyp_ret == ESP_OK) {
                 uint8_t water_left_percent = calculate_tank_water_percent(distance_cm);
                 g_ui_water_level_pct = water_left_percent;
+#if LOG_DYP_SENSOR
                 ESP_LOGI("DYP_SENSOR", "Distance: %u cm, Water left: %u%%", distance_cm, water_left_percent);
+#endif
             } else {
+#if LOG_DYP_SENSOR
                 ESP_LOGW("DYP_SENSOR", "Distance read failed: %s", esp_err_to_name(dyp_ret));
+#endif
             }
         }
 
@@ -554,7 +565,7 @@ static void routine_1_callback(bool is_on)
     (void)is_on;
     
     // If water is already present at the pipe
-    if (gpio_get_level(WS2811_D) == 1){
+    if (gpio_get_level(LIQUID_SENSOR_1) == 1){
         ESP_LOGI(TAG_ROUTINE_1, "Water is already in the pipe, routine 1 will not start!");
     }else {
         routine_1_sample_timer_init();
@@ -901,10 +912,30 @@ void Sensors_Init(){
 
 // init GPIO for liquid sensor
 void init_liquid_sensor_gpio(){
+    gpio_set_direction(LIQUID_SENSOR_1, GPIO_MODE_INPUT);
+    gpio_set_intr_type(LIQUID_SENSOR_1, GPIO_INTR_DISABLE);
 
-    gpio_set_direction(WS2811_D, GPIO_MODE_INPUT);
-    gpio_set_intr_type(WS2811_D, GPIO_INTR_DISABLE);
+    gpio_set_direction(LIQUID_SENSOR_2, GPIO_MODE_INPUT);
+    gpio_set_intr_type(LIQUID_SENSOR_2, GPIO_INTR_DISABLE);
 }
+
+// Set to 1 to enable liquid sensor debug logging task, 0 to disable
+#define LIQUID_SENSOR_DEBUG 1
+
+#if LIQUID_SENSOR_DEBUG
+static void liquid_sensor_debug_task(void *pvParameters)
+{
+    (void)pvParameters;
+    static const char *DBG_TAG = "LIQUID_DBG";
+    while (1) {
+        int s1 = gpio_get_level(LIQUID_SENSOR_1);
+        int s2 = gpio_get_level(LIQUID_SENSOR_2);
+        ESP_LOGI(DBG_TAG, "Sensor1 (GPIO%d)=%d  Sensor2 (GPIO%d)=%d",
+                 LIQUID_SENSOR_1, s1, LIQUID_SENSOR_2, s2);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+#endif
 
 static void routine_1_stop_outputs(void)
 {
@@ -929,7 +960,7 @@ static void routine_1_sample_timer_callback(void *arg)
     }
 
     s_routine_1_sample_count++;
-    if (gpio_get_level(WS2811_D) == 1) {
+    if (gpio_get_level(LIQUID_SENSOR_1) == 1) {
         s_routine_1_high_count++;
     }
 
@@ -988,11 +1019,15 @@ void app_main(void)
     init_liquid_sensor_gpio();
     routine_1_sample_timer_init();
 
+#if LIQUID_SENSOR_DEBUG
+    xTaskCreate(liquid_sensor_debug_task, "liquid_dbg", 2048, NULL, 1, NULL);
+#endif
+
     // Start WiFi connection
     wifi_init_sta();
 
-	// Sensors_Init();
-    // xTaskCreate(sensor_read_task, "sensor_read_task", 4096, NULL, 4, NULL);
+	Sensors_Init();
+    xTaskCreate(sensor_read_task, "sensor_read_task", 4096, NULL, 4, NULL);
 	
     xTaskCreate(ba234_read_task, "ba234_read_task", 1024*6, NULL, 2, NULL);
 
