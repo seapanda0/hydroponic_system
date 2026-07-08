@@ -19,7 +19,6 @@
 #include "st7789.h"
 #include "sht4x.h"
 #include "ultrasonic_sensor.h"
-#include "fontx.h"
 #include "lvgl.h"
 #include "kinetic_os.h"
 #include "ba234.h"
@@ -559,23 +558,6 @@ void ST7789(void *pvParameters)
 	// Initialize Touch Controller
     tp_init();
 
-	// set font file
-	FontxFile fx16G[2];
-	FontxFile fx24G[2];
-	FontxFile fx32G[2];
-	FontxFile fx32L[2];
-	InitFontx(fx16G,"/fonts/ILGH16XB.FNT",""); // 8x16Dot Gothic
-	InitFontx(fx24G,"/fonts/ILGH24XB.FNT",""); // 12x24Dot Gothic
-	InitFontx(fx32G,"/fonts/ILGH32XB.FNT",""); // 16x32Dot Gothic
-	InitFontx(fx32L,"/fonts/LATIN32B.FNT",""); // 16x32Dot Latin
-
-	FontxFile fx16M[2];
-	FontxFile fx24M[2];
-	FontxFile fx32M[2];
-	InitFontx(fx16M,"/fonts/ILMH16XB.FNT",""); // 8x16Dot Mincyo
-	InitFontx(fx24M,"/fonts/ILMH24XB.FNT",""); // 12x24Dot Mincyo
-	InitFontx(fx32M,"/fonts/ILMH32XB.FNT",""); // 16x32Dot Mincyo
-	
 	TFT_t dev;
 
 	// Change SPI Clock Frequency
