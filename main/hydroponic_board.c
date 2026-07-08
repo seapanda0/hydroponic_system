@@ -22,8 +22,10 @@
 #include "fontx.h"
 #include "lvgl.h"
 #include "kinetic_os.h"
-#include "webpage.h"
 #include "ba234.h"
+
+// Web UI page embedded from webpage.html (see CMakeLists.txt EMBED_TXTFILES)
+extern const char web_ui_html[] asm("_binary_webpage_html_start");
 
 // WiFi and HTTP Server imports
 #include "esp_wifi.h"
@@ -39,13 +41,11 @@ typedef struct {
     gpio_num_t liquid_sensor;               // liquid sensor watching this head's line
     const char *tag;                        // log tag / readable name
     volatile bool prime_active;             // "Prime Line" routine running
-    volatile bool target_dose_active;       // "Target Dose" routine running
     volatile bool shot_dose_active;         // "Shot Dose" routine running
     esp_timer_handle_t prime_sample_timer;  // periodic liquid sensor sampling during prime
     uint16_t prime_sample_count;
     uint16_t prime_high_count;
     esp_timer_handle_t shot_dose_timer;     // one-shot timer turning the output back off
-    float target_ec;                        // target EC setpoint (mS/cm) for target dosing
 } dosing_head_t;
 
 static dosing_head_t s_dosing_heads[2] = {
@@ -53,19 +53,54 @@ static dosing_head_t s_dosing_heads[2] = {
         .gpio = FERT_A_GPIO,
         .liquid_sensor = LIQUID_SENSOR_1,
         .tag = "Dosing Head A",
-        .target_ec = 1.0f,
     },
     {
         .gpio = FERT_B_GPIO,
         .liquid_sensor = LIQUID_SENSOR_2,
         .tag = "Dosing Head B",
+    },
+};
+
+// A dose group is the set of heads a "Target Dose" routine drives together.
+typedef struct {
+    const char *tag;                        // log tag / readable name
+    dosing_head_t *heads[2];                // heads dosed by this group
+    size_t head_count;
+    volatile bool active;                   // "Target Dose" routine running for this group
+    float target_ec;                        // target EC setpoint (mS/cm)
+} dose_group_t;
+
+enum {
+    DOSE_GROUP_A,
+    DOSE_GROUP_B,
+    DOSE_GROUP_AB,
+    DOSE_GROUP_COUNT
+};
+
+static dose_group_t s_dose_groups[DOSE_GROUP_COUNT] = {
+    [DOSE_GROUP_A] = {
+        .tag = "Target Dose A",
+        .heads = { &s_dosing_heads[0] },
+        .head_count = 1,
+        .target_ec = 1.0f,
+    },
+    [DOSE_GROUP_B] = {
+        .tag = "Target Dose B",
+        .heads = { &s_dosing_heads[1] },
+        .head_count = 1,
+        .target_ec = 1.0f,
+    },
+    [DOSE_GROUP_AB] = {
+        .tag = "Target Dose A+B",
+        .heads = { &s_dosing_heads[0], &s_dosing_heads[1] },
+        .head_count = 2,
         .target_ec = 1.0f,
     },
 };
 
 // Function Prototypes
 static void prime_line_toggle(dosing_head_t *head);
-static void target_dose_toggle(dosing_head_t *head, float target_ec);
+static void target_dose_toggle(dose_group_t *group, float target_ec);
 static void shot_dose_start(dosing_head_t *head);
 static void prime_sample_timer_init(dosing_head_t *head);
 static esp_err_t ba234_update_sensor_data(void);
@@ -90,8 +125,13 @@ static const char *TAG = "ST7789";
 #define PRIME_SAMPLE_WINDOW 100U
 #define PRIME_STOP_THRESHOLD 70U
 
-// "Shot Dose" routine: how long the output stays on for a single dose
-#define SHOT_DOSE_DURATION_US 500000U
+// "Shot Dose" routine: how long the output stays on for a single dose.
+// Tune this to adjust the amount of fertilizer injected per dose.
+#define SHOT_DOSE_DURATION_MS 500U
+
+// "Target Dose" routine: time between a dose and the next EC measurement,
+// so the nutrient has time to mix properly before being measured.
+#define TARGET_DOSE_MIX_INTERVAL_MS 3000U
 
 // Map grow light control to a physical output pin.
 // Change this alias if your grow light relay is wired differently.
@@ -352,6 +392,30 @@ static void ui_fert_b_switch_cb(bool is_on)
     ESP_LOGI(TAG, "Fertilizer B pump %s", is_on ? "ON" : "OFF");
 }
 
+// Routine buttons on the LVGL routines page
+static void ui_routine_cb(kinetic_routine_t routine)
+{
+    switch (routine) {
+    case KINETIC_ROUTINE_PRIME_A:
+        prime_line_toggle(&s_dosing_heads[0]);
+        break;
+    case KINETIC_ROUTINE_PRIME_B:
+        prime_line_toggle(&s_dosing_heads[1]);
+        break;
+    case KINETIC_ROUTINE_SHOT_A:
+        shot_dose_start(&s_dosing_heads[0]);
+        break;
+    case KINETIC_ROUTINE_SHOT_B:
+        shot_dose_start(&s_dosing_heads[1]);
+        break;
+    case KINETIC_ROUTINE_TARGET_AB:
+        target_dose_toggle(&s_dose_groups[DOSE_GROUP_AB], s_dose_groups[DOSE_GROUP_AB].target_ec);
+        break;
+    default:
+        break;
+    }
+}
+
 static void wait_for_touch(void) {
     uint16_t tx, ty;
     
@@ -557,6 +621,7 @@ void ST7789(void *pvParameters)
 	kinetic_os_set_light_switch_cb(ui_light_switch_cb);
     kinetic_os_set_fertilizer_a_switch_cb(ui_fert_a_switch_cb);
     kinetic_os_set_fertilizer_b_switch_cb(ui_fert_b_switch_cb);
+    kinetic_os_set_routine_cb(ui_routine_cb);
 
     kinetic_os_ui_init();
 
@@ -576,6 +641,12 @@ void ST7789(void *pvParameters)
             // EC is provided in us/cm by the sensor
             kinetic_os_set_ec(ba234_sensor_data.ec);
         }
+        // Mirror routine states onto the routines page buttons
+        kinetic_os_set_routine_state(KINETIC_ROUTINE_PRIME_A, s_dosing_heads[0].prime_active);
+        kinetic_os_set_routine_state(KINETIC_ROUTINE_PRIME_B, s_dosing_heads[1].prime_active);
+        kinetic_os_set_routine_state(KINETIC_ROUTINE_SHOT_A, s_dosing_heads[0].shot_dose_active);
+        kinetic_os_set_routine_state(KINETIC_ROUTINE_SHOT_B, s_dosing_heads[1].shot_dose_active);
+        kinetic_os_set_routine_state(KINETIC_ROUTINE_TARGET_AB, s_dose_groups[DOSE_GROUP_AB].active);
         lv_timer_handler();
         vTaskDelay(pdMS_TO_TICKS(10));
         lv_tick_inc(10);
@@ -705,67 +776,98 @@ static void shot_dose_start(dosing_head_t *head)
     head->shot_dose_active = true;
     gpio_set_level(head->gpio, 1);
 
-    ESP_ERROR_CHECK(esp_timer_start_once(head->shot_dose_timer, SHOT_DOSE_DURATION_US));
+    ESP_ERROR_CHECK(esp_timer_start_once(head->shot_dose_timer, (uint64_t)SHOT_DOSE_DURATION_MS * 1000ULL));
 }
 
 // --- "Target Dose" routine ---
-// Repeatedly shot-doses the head until the EC sensor reaches the target setpoint.
+// Repeatedly shot-doses every head in the group until the EC sensor reaches the target setpoint.
 
 static void target_dose_task(void *args)
 {
-    dosing_head_t *head = (dosing_head_t *)args;
-    uint32_t target_ec = (uint32_t)(head->target_ec * 1000.0f); // mS/cm -> uS/cm
+    dose_group_t *group = (dose_group_t *)args;
+    uint32_t target_ec = (uint32_t)(group->target_ec * 1000.0f); // mS/cm -> uS/cm
     bool target_reached = false;
 
-    ESP_LOGI(head->tag, "Target dosing started, target EC: %u", (unsigned int)target_ec);
+    ESP_LOGI(group->tag, "Target dosing started, target EC: %u", (unsigned int)target_ec);
 
     if (ba234_sensor_status != ESP_OK) {
-        gpio_set_level(head->gpio, 0);
-        ESP_LOGI(head->tag, "BA234 Sensor Disconnected!, will not initiate nutrient dosing!");
-        head->target_dose_active = false;
+        for (size_t i = 0; i < group->head_count; i++) {
+            gpio_set_level(group->heads[i]->gpio, 0);
+        }
+        ESP_LOGI(group->tag, "BA234 Sensor Disconnected!, will not initiate nutrient dosing!");
+        group->active = false;
         vTaskDelete(NULL);
         return;
     }
 
-    while (head->target_dose_active) {
-        ESP_LOGI(head->tag, "Reading EC sensor data...");
+    while (group->active) {
+        ESP_LOGI(group->tag, "Reading EC sensor data...");
         ba234_update_sensor_data();
 
-        ESP_LOGI(head->tag, "Current EC: %u, target EC: %u", (unsigned int)ba234_sensor_data.ec, (unsigned int)target_ec);
+        ESP_LOGI(group->tag, "Current EC: %u, target EC: %u", (unsigned int)ba234_sensor_data.ec, (unsigned int)target_ec);
         if (target_ec > ba234_sensor_data.ec) {
             // Dose the fertilizer if current concentration is less than target
-            ESP_LOGI(head->tag, "Current EC is below target, dosing fertilizer...");
-            shot_dose_start(head);
+            ESP_LOGI(group->tag, "Current EC is below target, dosing fertilizer...");
+            for (size_t i = 0; i < group->head_count; i++) {
+                shot_dose_start(group->heads[i]);
+            }
         } else {
-            ESP_LOGI(head->tag, "Target EC reached, stopping dosing loop");
+            ESP_LOGI(group->tag, "Target EC reached, stopping dosing loop");
             target_reached = true;
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        // Let the nutrient mix before the next EC measurement
+        vTaskDelay(pdMS_TO_TICKS(TARGET_DOSE_MIX_INTERVAL_MS));
     }
 
-    ESP_LOGI(head->tag, "Target dosing finished, target_reached=%s", target_reached ? "true" : "false");
-    gpio_set_level(head->gpio, 0);
-    head->target_dose_active = false;
+    ESP_LOGI(group->tag, "Target dosing finished, target_reached=%s", target_reached ? "true" : "false");
+    for (size_t i = 0; i < group->head_count; i++) {
+        gpio_set_level(group->heads[i]->gpio, 0);
+    }
+    group->active = false;
     vTaskDelete(NULL);
 }
 
-static void target_dose_toggle(dosing_head_t *head, float target_ec)
+// True if another active group is already dosing one of this group's heads
+static bool dose_group_conflicts(const dose_group_t *group)
 {
-    if (head->target_dose_active) {
-        // The dosing task notices the cleared flag and shuts the output off itself
-        ESP_LOGI(head->tag, "Target dosing cancel requested");
-        head->target_dose_active = false;
+    for (size_t g = 0; g < DOSE_GROUP_COUNT; g++) {
+        const dose_group_t *other = &s_dose_groups[g];
+        if (other == group || !other->active) {
+            continue;
+        }
+        for (size_t i = 0; i < group->head_count; i++) {
+            for (size_t j = 0; j < other->head_count; j++) {
+                if (group->heads[i] == other->heads[j]) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+static void target_dose_toggle(dose_group_t *group, float target_ec)
+{
+    if (group->active) {
+        // The dosing task notices the cleared flag and shuts the outputs off itself
+        ESP_LOGI(group->tag, "Target dosing cancel requested");
+        group->active = false;
         return;
     }
 
-    head->target_ec = target_ec;
-    ESP_LOGI(head->tag, "Target EC setpoint set to %.1f", target_ec);
+    if (dose_group_conflicts(group)) {
+        ESP_LOGW(group->tag, "Another target dose is already using this head, not starting");
+        return;
+    }
 
-    head->target_dose_active = true;
-    if (xTaskCreate(target_dose_task, "target_dose", 4096, head, 10, NULL) != pdPASS) {
-        ESP_LOGE(head->tag, "Failed to create target dose task");
-        head->target_dose_active = false;
+    group->target_ec = target_ec;
+    ESP_LOGI(group->tag, "Target EC setpoint set to %.1f", target_ec);
+
+    group->active = true;
+    if (xTaskCreate(target_dose_task, "target_dose", 4096, group, 10, NULL) != pdPASS) {
+        ESP_LOGE(group->tag, "Failed to create target dose task");
+        group->active = false;
     }
 }
 
@@ -807,18 +909,20 @@ static void build_status_json(char *buf, size_t buf_len)
 {
     snprintf(buf, buf_len,
              "{\"prime_a\":%s,\"prime_b\":%s,"
-             "\"target_dose_a\":%s,\"target_dose_b\":%s,"
+             "\"target_dose_a\":%s,\"target_dose_b\":%s,\"target_dose_ab\":%s,"
              "\"shot_dose_a\":%s,\"shot_dose_b\":%s,"
-             "\"target_ec_a\":%.1f,\"target_ec_b\":%.1f,"
+             "\"target_ec_a\":%.1f,\"target_ec_b\":%.1f,\"target_ec_ab\":%.1f,"
              "\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
              s_dosing_heads[0].prime_active ? "true" : "false",
              s_dosing_heads[1].prime_active ? "true" : "false",
-             s_dosing_heads[0].target_dose_active ? "true" : "false",
-             s_dosing_heads[1].target_dose_active ? "true" : "false",
+             s_dose_groups[DOSE_GROUP_A].active ? "true" : "false",
+             s_dose_groups[DOSE_GROUP_B].active ? "true" : "false",
+             s_dose_groups[DOSE_GROUP_AB].active ? "true" : "false",
              s_dosing_heads[0].shot_dose_active ? "true" : "false",
              s_dosing_heads[1].shot_dose_active ? "true" : "false",
-             s_dosing_heads[0].target_ec,
-             s_dosing_heads[1].target_ec,
+             s_dose_groups[DOSE_GROUP_A].target_ec,
+             s_dose_groups[DOSE_GROUP_B].target_ec,
+             s_dose_groups[DOSE_GROUP_AB].target_ec,
              g_ui_temperature_c,
              g_ui_humidity_pct,
              g_ui_water_level_pct);
@@ -840,9 +944,24 @@ static dosing_head_t *dosing_head_from_device(const char *device)
     return NULL;
 }
 
+// Maps a target dose device suffix ("a" / "b" / "ab") to its dose group
+static dose_group_t *dose_group_from_suffix(const char *suffix)
+{
+    if (strcmp(suffix, "a") == 0) {
+        return &s_dose_groups[DOSE_GROUP_A];
+    }
+    if (strcmp(suffix, "b") == 0) {
+        return &s_dose_groups[DOSE_GROUP_B];
+    }
+    if (strcmp(suffix, "ab") == 0) {
+        return &s_dose_groups[DOSE_GROUP_AB];
+    }
+    return NULL;
+}
+
 static esp_err_t status_get_handler(httpd_req_t *req)
 {
-    char json_response[288];
+    char json_response[384];
     build_status_json(json_response, sizeof(json_response));
 
     httpd_resp_set_type(req, "application/json");
@@ -863,13 +982,11 @@ static esp_err_t toggle_post_handler(httpd_req_t *req)
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         char device[16];
         if (httpd_query_key_value(query, "device", device, sizeof(device)) == ESP_OK) {
-            dosing_head_t *head = dosing_head_from_device(device);
-            if (head != NULL) {
-                if (strncmp(device, "prime_", 6) == 0) {
-                    prime_line_toggle(head);
-                } else if (strncmp(device, "target_dose_", 12) == 0) {
+            if (strncmp(device, "target_dose_", 12) == 0) {
+                dose_group_t *group = dose_group_from_suffix(device + 12);
+                if (group != NULL) {
                     char concentration_str[16];
-                    float target_ec = head->target_ec;
+                    float target_ec = group->target_ec;
                     if (httpd_query_key_value(query, "concentration", concentration_str, sizeof(concentration_str)) == ESP_OK) {
                         char *endptr = NULL;
                         float requested_ec = strtof(concentration_str, &endptr);
@@ -877,15 +994,22 @@ static esp_err_t toggle_post_handler(httpd_req_t *req)
                             target_ec = normalize_nutrient_concentration(requested_ec);
                         }
                     }
-                    target_dose_toggle(head, target_ec);
-                } else if (strncmp(device, "shot_dose_", 10) == 0) {
-                    shot_dose_start(head);
+                    target_dose_toggle(group, target_ec);
+                }
+            } else {
+                dosing_head_t *head = dosing_head_from_device(device);
+                if (head != NULL) {
+                    if (strncmp(device, "prime_", 6) == 0) {
+                        prime_line_toggle(head);
+                    } else if (strncmp(device, "shot_dose_", 10) == 0) {
+                        shot_dose_start(head);
+                    }
                 }
             }
         }
     }
 
-    char json_response[288];
+    char json_response[384];
     build_status_json(json_response, sizeof(json_response));
 
     httpd_resp_set_type(req, "application/json");

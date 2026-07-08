@@ -5,9 +5,30 @@ static lv_obj_t * root_tv;
 static lv_obj_t * page1;
 static lv_obj_t * page2;
 static lv_obj_t * page4;
+static lv_obj_t * page5; // Dosing routines
+static lv_obj_t * page6; // EC history chart
 static lv_obj_t * btn_nav1;
 static lv_obj_t * btn_nav2;
 static lv_obj_t * btn_nav3;
+static lv_obj_t * btn_nav4;
+static lv_obj_t * btn_nav5;
+#define NAV_BTN_COUNT 5
+
+// Page 5 Dynamic Elements (routine buttons)
+static lv_obj_t * p5_routine_btns[KINETIC_ROUTINE_COUNT];
+static lv_obj_t * p5_routine_labels[KINETIC_ROUTINE_COUNT];
+static bool p5_routine_active[KINETIC_ROUTINE_COUNT];
+static kinetic_os_routine_cb_t user_routine_cb = NULL;
+
+// Page 6 Dynamic Elements (EC chart)
+static lv_obj_t * p6_chart;
+static lv_chart_series_t * p6_ec_series;
+static lv_obj_t * p6_ec_value_label;
+static uint32_t p6_ec_samples[KINETIC_EC_CHART_POINT_COUNT];
+static uint16_t p6_ec_sample_count = 0;
+static uint16_t p6_ec_sample_head = 0;
+static uint32_t s_last_ec = 0;
+static bool s_ec_seen = false;
 
 static lv_obj_t * p_top_title;
 static kinetic_os_switch_cb_t user_pump_cb = NULL;
@@ -64,9 +85,12 @@ static void build_bottom_bar(void);
 static void build_page1(void);
 static void build_page2(void);
 static void build_page4(void);
+static void build_page5(void);
+static void build_page6(void);
 static void bottom_nav_event_cb(lv_event_t * e);
 static void tileview_scroll_event_cb(lv_event_t * e);
 static void update_bottom_nav_styles(uint8_t active_idx);
+static void ec_chart_timer_cb(lv_timer_t * timer);
 
 void kinetic_os_ui_init(void) {
     lv_obj_set_style_bg_color(lv_scr_act(), KINETIC_COLOR_BG, 0);
@@ -83,15 +107,21 @@ void kinetic_os_ui_init(void) {
     page1 = lv_tileview_add_tile(root_tv, 0, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
     page2 = lv_tileview_add_tile(root_tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
     page4 = lv_tileview_add_tile(root_tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    page5 = lv_tileview_add_tile(root_tv, 3, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    page6 = lv_tileview_add_tile(root_tv, 4, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
 
     build_page1();
     build_page2();
     build_page4();
+    build_page5();
+    build_page6();
 
     build_top_bar();
     build_bottom_bar();
 
     update_bottom_nav_styles(0);
+
+    lv_timer_create(ec_chart_timer_cb, KINETIC_EC_CHART_SAMPLE_PERIOD_MS, NULL);
 }
 
 static void build_top_bar(void) {
@@ -139,7 +169,7 @@ static void build_bottom_bar(void) {
     lv_obj_clear_flag(flex, LV_OBJ_FLAG_SCROLLABLE); // Prevent accidental nav bar scrolling
 
     btn_nav1 = lv_btn_create(flex);
-    lv_obj_set_size(btn_nav1, 104, 38);
+    lv_obj_set_size(btn_nav1, 60, 38);
     lv_obj_set_style_radius(btn_nav1, 8, 0);
     lv_obj_add_event_cb(btn_nav1, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)0);
     lv_obj_t * l1 = lv_label_create(btn_nav1);
@@ -147,7 +177,7 @@ static void build_bottom_bar(void) {
     lv_obj_center(l1);
 
     btn_nav2 = lv_btn_create(flex);
-    lv_obj_set_size(btn_nav2, 104, 38);
+    lv_obj_set_size(btn_nav2, 60, 38);
     lv_obj_set_style_radius(btn_nav2, 8, 0);
     lv_obj_add_event_cb(btn_nav2, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)1);
     lv_obj_t * l2 = lv_label_create(btn_nav2);
@@ -155,17 +185,33 @@ static void build_bottom_bar(void) {
     lv_obj_center(l2);
 
     btn_nav3 = lv_btn_create(flex);
-    lv_obj_set_size(btn_nav3, 104, 38);
+    lv_obj_set_size(btn_nav3, 60, 38);
     lv_obj_set_style_radius(btn_nav3, 8, 0);
     lv_obj_add_event_cb(btn_nav3, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)2);
     lv_obj_t * l3 = lv_label_create(btn_nav3);
     lv_label_set_text(l3, LV_SYMBOL_SETTINGS); // "Setup"
     lv_obj_center(l3);
+
+    btn_nav4 = lv_btn_create(flex);
+    lv_obj_set_size(btn_nav4, 60, 38);
+    lv_obj_set_style_radius(btn_nav4, 8, 0);
+    lv_obj_add_event_cb(btn_nav4, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)3);
+    lv_obj_t * l4 = lv_label_create(btn_nav4);
+    lv_label_set_text(l4, LV_SYMBOL_PLAY); // "Routines"
+    lv_obj_center(l4);
+
+    btn_nav5 = lv_btn_create(flex);
+    lv_obj_set_size(btn_nav5, 60, 38);
+    lv_obj_set_style_radius(btn_nav5, 8, 0);
+    lv_obj_add_event_cb(btn_nav5, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)4);
+    lv_obj_t * l5 = lv_label_create(btn_nav5);
+    lv_label_set_text(l5, LV_SYMBOL_IMAGE); // "EC Chart"
+    lv_obj_center(l5);
 }
 
 static void update_bottom_nav_styles(uint8_t active_idx) {
-    lv_obj_t * btns[3] = {btn_nav1, btn_nav2, btn_nav3};
-    for(int i = 0; i < 3; i++) {
+    lv_obj_t * btns[NAV_BTN_COUNT] = {btn_nav1, btn_nav2, btn_nav3, btn_nav4, btn_nav5};
+    for(int i = 0; i < NAV_BTN_COUNT; i++) {
         if(i == active_idx) {
             lv_obj_set_style_bg_color(btns[i], KINETIC_COLOR_PRIMARY, 0);
             lv_obj_set_style_bg_opa(btns[i], LV_OPA_20, 0);
@@ -188,6 +234,8 @@ static void tileview_scroll_event_cb(lv_event_t * e) {
     if(active == page1) update_bottom_nav_styles(0);
     else if(active == page2) update_bottom_nav_styles(1);
     else if(active == page4) update_bottom_nav_styles(2);
+    else if(active == page5) update_bottom_nav_styles(3);
+    else if(active == page6) update_bottom_nav_styles(4);
 }
 
 static void arc_tds_event_cb(lv_event_t * e) {
@@ -316,6 +364,8 @@ void kinetic_os_set_tds(uint16_t ppm) {
 }
 
 void kinetic_os_set_ec(uint32_t us_per_cm) {
+    s_last_ec = us_per_cm;
+    s_ec_seen = true;
     if(p1_ec_val) {
         lv_label_set_text_fmt(p1_ec_val, "%u", (unsigned)us_per_cm);
     }
@@ -952,4 +1002,134 @@ static void build_page4(void) {
     lv_obj_set_style_bg_color(p4_light_sw, KINETIC_COLOR_PRIMARY, LV_PART_INDICATOR | LV_STATE_CHECKED);
     lv_obj_add_event_cb(p4_light_sw, light_sw_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
     kinetic_os_set_light_state(false);
+}
+
+// --- Page 5: Dosing Routines ---
+
+void kinetic_os_set_routine_cb(kinetic_os_routine_cb_t cb) { user_routine_cb = cb; }
+
+void kinetic_os_set_routine_state(kinetic_routine_t routine, bool active) {
+    if(routine >= KINETIC_ROUTINE_COUNT) return;
+    if(!p5_routine_btns[routine]) return;
+    if(p5_routine_active[routine] == active) return; // called every UI tick, skip redundant restyling
+    p5_routine_active[routine] = active;
+
+    lv_obj_t * btn = p5_routine_btns[routine];
+    lv_obj_t * label = p5_routine_labels[routine];
+    if(active) {
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x183018), 0);
+        lv_obj_set_style_border_color(btn, KINETIC_COLOR_PRIMARY, 0);
+        lv_obj_set_style_border_opa(btn, LV_OPA_80, 0);
+        lv_obj_set_style_text_color(label, KINETIC_COLOR_PRIMARY, 0);
+    } else {
+        lv_obj_set_style_bg_color(btn, KINETIC_COLOR_SURFACE, 0);
+        lv_obj_set_style_border_color(btn, KINETIC_COLOR_OUTLINE, 0);
+        lv_obj_set_style_border_opa(btn, LV_OPA_50, 0);
+        lv_obj_set_style_text_color(label, KINETIC_COLOR_TEXT_DIM, 0);
+    }
+}
+
+static void routine_btn_event_cb(lv_event_t * e) {
+    kinetic_routine_t routine = (kinetic_routine_t)(uintptr_t)lv_event_get_user_data(e);
+    if(user_routine_cb) user_routine_cb(routine);
+}
+
+static lv_obj_t * create_routine_btn(kinetic_routine_t routine, const char * text,
+                                     lv_coord_t x, lv_coord_t y, lv_coord_t w, lv_coord_t h) {
+    lv_obj_t * btn = lv_btn_create(page5);
+    lv_obj_set_size(btn, w, h);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_style_bg_color(btn, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_color(btn, KINETIC_COLOR_OUTLINE, 0);
+    lv_obj_set_style_border_opa(btn, LV_OPA_50, 0);
+    lv_obj_set_style_radius(btn, 10, 0);
+    lv_obj_add_event_cb(btn, routine_btn_event_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)routine);
+
+    lv_obj_t * label = lv_label_create(btn);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_color(label, KINETIC_COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(label, FONT_BASE, 0);
+    lv_obj_center(label);
+
+    p5_routine_btns[routine] = btn;
+    p5_routine_labels[routine] = label;
+    p5_routine_active[routine] = false;
+    return btn;
+}
+
+static void build_page5(void) {
+    lv_obj_clear_flag(page5, LV_OBJ_FLAG_SCROLLABLE);
+
+    create_routine_btn(KINETIC_ROUTINE_PRIME_A, LV_SYMBOL_TINT " PRIME A", 5, 5, 150, 48);
+    create_routine_btn(KINETIC_ROUTINE_PRIME_B, LV_SYMBOL_TINT " PRIME B", 165, 5, 150, 48);
+    create_routine_btn(KINETIC_ROUTINE_SHOT_A, LV_SYMBOL_CHARGE " SHOT A", 5, 58, 150, 48);
+    create_routine_btn(KINETIC_ROUTINE_SHOT_B, LV_SYMBOL_CHARGE " SHOT B", 165, 58, 150, 48);
+    create_routine_btn(KINETIC_ROUTINE_TARGET_AB, LV_SYMBOL_REFRESH " TARGET DOSE A+B", 5, 111, 310, 48);
+}
+
+// --- Page 6: EC History Chart ---
+
+static void ec_chart_timer_cb(lv_timer_t * timer) {
+    (void)timer;
+    if(!p6_chart || !p6_ec_series) return;
+    if(!s_ec_seen) return; // no sensor reading yet, keep the chart empty
+
+    // Keep our own copy of the visible window to autoscale the Y axis
+    p6_ec_samples[p6_ec_sample_head] = s_last_ec;
+    p6_ec_sample_head = (p6_ec_sample_head + 1) % KINETIC_EC_CHART_POINT_COUNT;
+    if(p6_ec_sample_count < KINETIC_EC_CHART_POINT_COUNT) p6_ec_sample_count++;
+
+    uint32_t max_ec = 0;
+    for(uint16_t i = 0; i < p6_ec_sample_count; i++) {
+        if(p6_ec_samples[i] > max_ec) max_ec = p6_ec_samples[i];
+    }
+    uint32_t range_max = max_ec + max_ec / 10U; // 10% headroom
+    if(range_max < 100U) range_max = 100U;
+    lv_chart_set_range(p6_chart, LV_CHART_AXIS_PRIMARY_Y, 0, (lv_coord_t)range_max);
+
+    lv_chart_set_next_value(p6_chart, p6_ec_series, (lv_coord_t)s_last_ec);
+
+    if(p6_ec_value_label) {
+        lv_label_set_text_fmt(p6_ec_value_label, "%u uS/cm", (unsigned)s_last_ec);
+    }
+}
+
+static void build_page6(void) {
+    lv_obj_clear_flag(page6, LV_OBJ_FLAG_SCROLLABLE);
+
+    p6_chart = lv_chart_create(page6);
+    lv_obj_set_size(p6_chart, 314, 164);
+    lv_obj_align(p6_chart, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(p6_chart, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_color(p6_chart, KINETIC_COLOR_OUTLINE, 0);
+    lv_obj_set_style_border_width(p6_chart, 1, 0);
+    lv_obj_set_style_border_opa(p6_chart, LV_OPA_30, 0);
+    lv_obj_set_style_radius(p6_chart, 8, 0);
+    lv_obj_set_style_pad_all(p6_chart, 4, 0);
+    lv_obj_set_style_line_color(p6_chart, lv_color_hex(0x1e201d), LV_PART_MAIN); // division lines
+    lv_obj_set_style_size(p6_chart, 0, LV_PART_INDICATOR); // hide point dots
+
+    lv_chart_set_type(p6_chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(p6_chart, KINETIC_EC_CHART_POINT_COUNT);
+    lv_chart_set_update_mode(p6_chart, LV_CHART_UPDATE_MODE_SHIFT);
+    lv_chart_set_div_line_count(p6_chart, 4, 6);
+    lv_chart_set_range(p6_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+
+    p6_ec_series = lv_chart_add_series(p6_chart, KINETIC_COLOR_TERTIARY, LV_CHART_AXIS_PRIMARY_Y);
+    lv_chart_set_all_value(p6_chart, p6_ec_series, LV_CHART_POINT_NONE);
+
+    lv_obj_t * title = lv_label_create(p6_chart);
+    lv_label_set_text(title, "EC - 3 MIN");
+    lv_obj_set_style_text_color(title, KINETIC_COLOR_TEXT_DIM, 0);
+#if LV_FONT_MONTSERRAT_12
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_12, 0);
+#endif
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 4, 2);
+
+    p6_ec_value_label = lv_label_create(p6_chart);
+    lv_label_set_text(p6_ec_value_label, "-- uS/cm");
+    lv_obj_set_style_text_color(p6_ec_value_label, KINETIC_COLOR_TERTIARY, 0);
+    lv_obj_set_style_text_font(p6_ec_value_label, FONT_BASE, 0);
+    lv_obj_align(p6_ec_value_label, LV_ALIGN_TOP_RIGHT, -4, 2);
 }

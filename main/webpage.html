@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hydroponic Controller</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0d0f0d;
+            --surface-color: #121412;
+            --surface-variant: #242623;
+            --primary-color: #8eff71;
+            --primary-dim: #2be800;
+            --text-color: #ffffff;
+            --text-dim: #a0a5a0;
+            --danger-color: #ff5a5a;
+        }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            background: var(--surface-color);
+            border: 1px solid var(--surface-variant);
+            border-radius: 24px;
+            padding: 40px 30px;
+            width: 100%;
+            max-width: 480px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .container::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(142,255,113,0.05) 0%, transparent 60%);
+            pointer-events: none;
+        }
+        h1 {
+            font-size: 2.2rem;
+            font-weight: 800;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, #ffffff 30%, var(--primary-color) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .subtitle {
+            font-size: 1rem;
+            color: var(--text-dim);
+            margin-bottom: 30px;
+            font-weight: 300;
+        }
+        .sensor-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-bottom: 30px;
+        }
+        .sensor-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--surface-variant);
+            border-radius: 16px;
+            padding: 15px 10px;
+            transition: all 0.3s ease;
+        }
+        .sensor-card:hover {
+            border-color: rgba(142, 255, 113, 0.3);
+            background: rgba(142, 255, 113, 0.02);
+        }
+        .sensor-label {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 6px;
+        }
+        .sensor-value {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .btn {
+            background: var(--surface-variant);
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 16px;
+            color: var(--text-color);
+            padding: 18px 24px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            outline: none;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            border-color: rgba(255,255,255,0.1);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+        .btn.active {
+            background: rgba(142, 255, 113, 0.15);
+            border-color: var(--primary-color);
+            color: var(--primary-color);
+            box-shadow: 0 10px 25px rgba(142, 255, 113, 0.15);
+        }
+        .btn.active:hover {
+            box-shadow: 0 12px 30px rgba(142, 255, 113, 0.25);
+        }
+        .btn-status {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            background: rgba(255,255,255,0.05);
+            color: var(--text-dim);
+            transition: all 0.3s ease;
+        }
+        .btn.active .btn-status {
+            background: var(--primary-color);
+            color: var(--bg-color);
+            font-weight: 800;
+        }
+        .icon {
+            margin-right: 10px;
+        }
+        .field {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--surface-variant);
+            border-radius: 16px;
+            padding: 16px;
+            text-align: left;
+        }
+        .field label {
+            display: block;
+            color: var(--text-dim);
+            font-size: 0.8rem;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+        .field input {
+            width: 100%;
+            background: var(--bg-color);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px;
+            color: var(--primary-color);
+            font: inherit;
+            font-size: 1.2rem;
+            font-weight: 600;
+            padding: 12px;
+            outline: none;
+        }
+        .field input:focus {
+            border-color: var(--primary-color);
+        }
+        .section-title {
+            color: var(--text-dim);
+            font-size: 0.85rem;
+            font-weight: 600;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            text-align: left;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Hydroponic System</h1>
+        <div class="subtitle">WiFi Remote Control Panel</div>
+
+        <div class="sensor-grid">
+            <div class="sensor-card">
+                <div class="sensor-label">Temp</div>
+                <div class="sensor-value" id="temp-val">-- C</div>
+            </div>
+            <div class="sensor-card">
+                <div class="sensor-label">Humidity</div>
+                <div class="sensor-value" id="humidity-val">--%</div>
+            </div>
+            <div class="sensor-card">
+                <div class="sensor-label">Water</div>
+                <div class="sensor-value" id="water-val">--%</div>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <div class="section-title">Dosing Head A</div>
+            <button class="btn" id="btn-prime_a" onclick="toggleDevice('prime_a')">
+                <span><span class="icon">💧</span>Prime Line</span>
+                <span class="btn-status" id="status-prime_a">OFF</span>
+            </button>
+            <div class="field">
+                <label for="target-ec-a">Target EC (mS/cm)</label>
+                <input id="target-ec-a" type="number" min="0" step="0.1" value="1.0">
+            </div>
+            <button class="btn" id="btn-target_dose_a" onclick="toggleDevice('target_dose_a')">
+                <span><span class="icon">🎯</span>Target Dose</span>
+                <span class="btn-status" id="status-target_dose_a">OFF</span>
+            </button>
+            <button class="btn" id="btn-shot_dose_a" onclick="toggleDevice('shot_dose_a')">
+                <span><span class="icon">⚡</span>Shot Dose</span>
+                <span class="btn-status" id="status-shot_dose_a">OFF</span>
+            </button>
+
+            <div class="section-title">Dosing Head B</div>
+            <button class="btn" id="btn-prime_b" onclick="toggleDevice('prime_b')">
+                <span><span class="icon">💧</span>Prime Line</span>
+                <span class="btn-status" id="status-prime_b">OFF</span>
+            </button>
+            <div class="field">
+                <label for="target-ec-b">Target EC (mS/cm)</label>
+                <input id="target-ec-b" type="number" min="0" step="0.1" value="1.0">
+            </div>
+            <button class="btn" id="btn-target_dose_b" onclick="toggleDevice('target_dose_b')">
+                <span><span class="icon">🎯</span>Target Dose</span>
+                <span class="btn-status" id="status-target_dose_b">OFF</span>
+            </button>
+            <button class="btn" id="btn-shot_dose_b" onclick="toggleDevice('shot_dose_b')">
+                <span><span class="icon">⚡</span>Shot Dose</span>
+                <span class="btn-status" id="status-shot_dose_b">OFF</span>
+            </button>
+
+            <div class="section-title">Dosing Heads A + B</div>
+            <div class="field">
+                <label for="target-ec-ab">Target EC (mS/cm)</label>
+                <input id="target-ec-ab" type="number" min="0" step="0.1" value="1.0">
+            </div>
+            <button class="btn" id="btn-target_dose_ab" onclick="toggleDevice('target_dose_ab')">
+                <span><span class="icon">🎯</span>Target Dose A + B</span>
+                <span class="btn-status" id="status-target_dose_ab">OFF</span>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const TOGGLES = ['prime_a', 'target_dose_a', 'shot_dose_a',
+                         'prime_b', 'target_dose_b', 'shot_dose_b',
+                         'target_dose_ab'];
+        const EC_INPUTS = ['a', 'b', 'ab'];
+        let targetEcDirty = { a: false, b: false, ab: false };
+
+        function updateUI(status) {
+            document.getElementById('temp-val').innerText = status.temp.toFixed(1) + ' C';
+            document.getElementById('humidity-val').innerText = status.humidity.toFixed(1) + '%';
+            document.getElementById('water-val').innerText = status.water + '%';
+
+            EC_INPUTS.forEach(key => {
+                const ecInput = document.getElementById('target-ec-' + key);
+                if (!targetEcDirty[key] && document.activeElement !== ecInput) {
+                    ecInput.value = status['target_ec_' + key].toFixed(1);
+                }
+            });
+
+            TOGGLES.forEach(key => {
+                const btn = document.getElementById('btn-' + key);
+                const label = document.getElementById('status-' + key);
+                if (status[key]) {
+                    btn.classList.add('active');
+                    label.innerText = 'ON';
+                } else {
+                    btn.classList.remove('active');
+                    label.innerText = 'OFF';
+                }
+            });
+        }
+
+        function fetchStatus() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    updateUI(data);
+                })
+                .catch(err => console.error('Error fetching status:', err));
+        }
+
+        function toggleDevice(device) {
+            let url = '/api/toggle?device=' + device;
+            if (device.startsWith('target_dose_')) {
+                const key = device.substring('target_dose_'.length);
+                const targetEc = Number(document.getElementById('target-ec-' + key).value || 0).toFixed(1);
+                url += '&concentration=' + encodeURIComponent(targetEc);
+                targetEcDirty[key] = false;
+            }
+            fetch(url, { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    updateUI(data);
+                })
+                .catch(err => console.error('Error toggling device:', err));
+        }
+
+        EC_INPUTS.forEach(key => {
+            document.getElementById('target-ec-' + key).addEventListener('input', () => {
+                targetEcDirty[key] = true;
+            });
+        });
+
+        // Poll status every 2 seconds
+        setInterval(fetchStatus, 2000);
+        // Initial fetch
+        fetchStatus();
+    </script>
+</body>
+</html>
