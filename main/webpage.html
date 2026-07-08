@@ -187,6 +187,29 @@
             text-align: left;
             margin-top: 10px;
         }
+        .chart-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--surface-variant);
+            border-radius: 16px;
+            padding: 15px;
+            margin-bottom: 30px;
+        }
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .chart-value {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #45fec9;
+        }
+        #ec-chart {
+            width: 100%;
+            height: 200px;
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -207,6 +230,14 @@
                 <div class="sensor-label">Water</div>
                 <div class="sensor-value" id="water-val">--%</div>
             </div>
+        </div>
+
+        <div class="chart-card">
+            <div class="chart-header">
+                <div class="sensor-label">EC &mdash; last 3 min</div>
+                <div class="chart-value" id="ec-now">-- &micro;S/cm</div>
+            </div>
+            <canvas id="ec-chart"></canvas>
         </div>
 
         <div class="control-group">
@@ -299,6 +330,87 @@
                 .catch(err => console.error('Error fetching status:', err));
         }
 
+        function drawEcChart(history) {
+            const canvas = document.getElementById('ec-chart');
+            const ctx = canvas.getContext('2d');
+            const dpr = window.devicePixelRatio || 1;
+            const w = canvas.clientWidth;
+            const h = canvas.clientHeight;
+            if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+                canvas.width = w * dpr;
+                canvas.height = h * dpr;
+            }
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, w, h);
+
+            const data = history.ec;
+            const maxPoints = Math.max(2, Math.round(history.window_ms / history.period_ms));
+
+            // Y scale: 0 up to max + 10% headroom, at least 100
+            const maxVal = Math.max(100, Math.max(0, ...data) * 1.1);
+
+            // Grid
+            ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+            ctx.lineWidth = 1;
+            ctx.font = '11px Outfit, sans-serif';
+            ctx.fillStyle = 'rgba(160,165,160,0.8)';
+            ctx.textBaseline = 'top';
+            for (let i = 0; i <= 4; i++) {
+                const y = (h - 14) * i / 4 + 0.5;
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(w, y);
+                ctx.stroke();
+                const gridVal = Math.round(maxVal * (4 - i) / 4);
+                ctx.fillText(gridVal, 4, y + 2);
+            }
+
+            if (data.length === 0) {
+                document.getElementById('ec-now').innerHTML = '-- &micro;S/cm';
+                return;
+            }
+
+            // Newest sample anchored at the right edge
+            const stepX = w / (maxPoints - 1);
+            const x0 = w - (data.length - 1) * stepX;
+            const yOf = v => (h - 14) * (1 - v / maxVal) + 2;
+
+            // Fill under the line
+            const grad = ctx.createLinearGradient(0, 0, 0, h);
+            grad.addColorStop(0, 'rgba(69,254,201,0.25)');
+            grad.addColorStop(1, 'rgba(69,254,201,0)');
+            ctx.beginPath();
+            ctx.moveTo(x0, h);
+            data.forEach((v, i) => ctx.lineTo(x0 + i * stepX, yOf(v)));
+            ctx.lineTo(w, h);
+            ctx.closePath();
+            ctx.fillStyle = grad;
+            ctx.fill();
+
+            // Line
+            ctx.beginPath();
+            data.forEach((v, i) => {
+                const x = x0 + i * stepX;
+                if (i === 0) ctx.moveTo(x, yOf(v));
+                else ctx.lineTo(x, yOf(v));
+            });
+            ctx.strokeStyle = '#45fec9';
+            ctx.lineWidth = 2;
+            ctx.lineJoin = 'round';
+            ctx.stroke();
+
+            document.getElementById('ec-now').innerHTML = data[data.length - 1] + ' &micro;S/cm';
+        }
+
+        function fetchEcHistory() {
+            fetch('/api/ec_history')
+                .then(response => response.json())
+                .then(data => {
+                    drawEcChart(data);
+                })
+                .catch(err => console.error('Error fetching EC history:', err));
+        }
+
         function toggleDevice(device) {
             let url = '/api/toggle?device=' + device;
             if (device.startsWith('target_dose_')) {
@@ -321,10 +433,12 @@
             });
         });
 
-        // Poll status every 2 seconds
+        // Poll status and EC history every 2 seconds
         setInterval(fetchStatus, 2000);
+        setInterval(fetchEcHistory, 2000);
         // Initial fetch
         fetchStatus();
+        fetchEcHistory();
     </script>
 </body>
 </html>

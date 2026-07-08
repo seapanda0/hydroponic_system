@@ -132,6 +132,11 @@ static const char *TAG = "ST7789";
 // so the nutrient has time to mix properly before being measured.
 #define TARGET_DOSE_MIX_INTERVAL_MS 3000U
 
+// EC history served to the web UI chart: sample period and window (3 minutes)
+#define EC_HISTORY_SAMPLE_PERIOD_MS 2000U
+#define EC_HISTORY_WINDOW_MS 180000U
+#define EC_HISTORY_POINT_COUNT (EC_HISTORY_WINDOW_MS / EC_HISTORY_SAMPLE_PERIOD_MS)
+
 // Map grow light control to a physical output pin.
 // Change this alias if your grow light relay is wired differently.
 #define GROW_LIGHT_GPIO WS2811_CTRL
@@ -873,6 +878,39 @@ static esp_err_t ba234_update_sensor_data(void)
     return err;
 }
 
+// EC history ring buffer feeding the web UI chart
+static uint32_t s_ec_history[EC_HISTORY_POINT_COUNT];
+static volatile uint16_t s_ec_history_count = 0;
+static volatile uint16_t s_ec_history_head = 0; // next write index
+
+static void ec_history_timer_callback(void *arg)
+{
+    (void)arg;
+
+    if (ba234_sensor_status != ESP_OK) {
+        return;
+    }
+
+    s_ec_history[s_ec_history_head] = ba234_sensor_data.ec;
+    s_ec_history_head = (s_ec_history_head + 1) % EC_HISTORY_POINT_COUNT;
+    if (s_ec_history_count < EC_HISTORY_POINT_COUNT) {
+        s_ec_history_count++;
+    }
+}
+
+static void ec_history_sampler_init(void)
+{
+    esp_timer_handle_t timer;
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = &ec_history_timer_callback,
+        .name = "ec_history_sample"
+    };
+
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(timer, (uint64_t)EC_HISTORY_SAMPLE_PERIOD_MS * 1000ULL));
+}
+
 // HTTP Server endpoint handlers
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
@@ -1006,6 +1044,41 @@ static const httpd_uri_t toggle_uri = {
     .user_ctx  = NULL
 };
 
+static esp_err_t ec_history_get_handler(httpd_req_t *req)
+{
+    // Handlers run serialized in the httpd task, so a static buffer is safe
+    // and keeps ~1 KB off the httpd task stack.
+    static char json_response[EC_HISTORY_POINT_COUNT * 11 + 48];
+
+    uint16_t count = s_ec_history_count;
+    uint16_t head = s_ec_history_head;
+    size_t pos = 0;
+
+    pos += snprintf(json_response + pos, sizeof(json_response) - pos,
+                    "{\"period_ms\":%u,\"window_ms\":%u,\"ec\":[",
+                    (unsigned)EC_HISTORY_SAMPLE_PERIOD_MS,
+                    (unsigned)EC_HISTORY_WINDOW_MS);
+
+    // Emit oldest -> newest
+    for (uint16_t i = 0; i < count; i++) {
+        uint16_t idx = (head + EC_HISTORY_POINT_COUNT - count + i) % EC_HISTORY_POINT_COUNT;
+        pos += snprintf(json_response + pos, sizeof(json_response) - pos,
+                        "%s%u", i ? "," : "", (unsigned)s_ec_history[idx]);
+    }
+    snprintf(json_response + pos, sizeof(json_response) - pos, "]}");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+}
+
+static const httpd_uri_t ec_history_uri = {
+    .uri       = "/api/ec_history",
+    .method    = HTTP_GET,
+    .handler   = ec_history_get_handler,
+    .user_ctx  = NULL
+};
+
 static httpd_handle_t start_webserver(void)
 {
     httpd_handle_t server = NULL;
@@ -1018,6 +1091,7 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &root_uri);
         httpd_register_uri_handler(server, &status_uri);
         httpd_register_uri_handler(server, &toggle_uri);
+        httpd_register_uri_handler(server, &ec_history_uri);
         return server;
     }
 
@@ -1198,6 +1272,9 @@ void app_main(void)
     init_liquid_sensor_gpio();
     prime_sample_timer_init(&s_dosing_heads[0]);
     prime_sample_timer_init(&s_dosing_heads[1]);
+
+    // Start sampling EC for the web UI chart
+    ec_history_sampler_init();
 
 #if LIQUID_SENSOR_DEBUG
     xTaskCreate(liquid_sensor_debug_task, "liquid_dbg", 2048, NULL, 1, NULL);
