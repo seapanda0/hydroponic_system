@@ -33,17 +33,42 @@
 #include "esp_http_server.h"
 #include "wifi.h"
 
-// Function Prototypes
-static void routine_1_callback(bool is_on);
-static void routine_2_callback(float nutrient_concentration);
-static void routine_3_callback(bool is_on);
-static void routine_1_sample_timer_init(void);
-static esp_err_t ba234_update_sensor_data(void);
+// Dosing head state. Each head is a pump + valve set wired in parallel on a single GPIO.
+typedef struct {
+    gpio_num_t gpio;                        // output driving the pump + valve set
+    gpio_num_t liquid_sensor;               // liquid sensor watching this head's line
+    const char *tag;                        // log tag / readable name
+    volatile bool prime_active;             // "Prime Line" routine running
+    volatile bool target_dose_active;       // "Target Dose" routine running
+    volatile bool shot_dose_active;         // "Shot Dose" routine running
+    esp_timer_handle_t prime_sample_timer;  // periodic liquid sensor sampling during prime
+    uint16_t prime_sample_count;
+    uint16_t prime_high_count;
+    esp_timer_handle_t shot_dose_timer;     // one-shot timer turning the output back off
+    float target_ec;                        // target EC setpoint (mS/cm) for target dosing
+} dosing_head_t;
 
-// Control Variables for Routines
-bool routine_1_active = false;
-bool routine_2_active = false;
-bool routine_3_active = false;
+static dosing_head_t s_dosing_heads[2] = {
+    {
+        .gpio = FERT_A_GPIO,
+        .liquid_sensor = LIQUID_SENSOR_1,
+        .tag = "Dosing Head A",
+        .target_ec = 1.0f,
+    },
+    {
+        .gpio = FERT_B_GPIO,
+        .liquid_sensor = LIQUID_SENSOR_2,
+        .tag = "Dosing Head B",
+        .target_ec = 1.0f,
+    },
+};
+
+// Function Prototypes
+static void prime_line_toggle(dosing_head_t *head);
+static void target_dose_toggle(dosing_head_t *head, float target_ec);
+static void shot_dose_start(dosing_head_t *head);
+static void prime_sample_timer_init(dosing_head_t *head);
+static esp_err_t ba234_update_sensor_data(void);
 
 // BA234 Sensor data stuct
 esp_err_t ba234_sensor_status = ESP_ERR_INVALID_STATE;
@@ -59,12 +84,14 @@ static void wait_for_touch(void);
 #define WAIT wait_for_touch()
 
 static const char *TAG = "ST7789";
-static const char *TAG_ROUTINE_1 = "Routine 1";
-static const char *TAG_ROUTINE_2 = "Routine 2";
 
-#define ROUTINE_1_SAMPLE_PERIOD_US 1000U
-#define ROUTINE_1_SAMPLE_WINDOW 100U
-#define ROUTINE_1_STOP_THRESHOLD 70U
+// "Prime Line" routine: liquid sensor sampling parameters
+#define PRIME_SAMPLE_PERIOD_US 1000U
+#define PRIME_SAMPLE_WINDOW 100U
+#define PRIME_STOP_THRESHOLD 70U
+
+// "Shot Dose" routine: how long the output stays on for a single dose
+#define SHOT_DOSE_DURATION_US 500000U
 
 // Map grow light control to a physical output pin.
 // Change this alias if your grow light relay is wired differently.
@@ -75,10 +102,6 @@ static bool s_grow_light_on = false;
 static bool s_fert_a_on = false;
 static bool s_fert_b_on = false;
 static bool g_touch_ready = false;
-static esp_timer_handle_t s_routine_1_sample_timer = NULL;
-static uint16_t s_routine_1_sample_count = 0;
-static uint16_t s_routine_1_high_count = 0;
-static float s_routine_2_nutrient_concentration = 1.0f;
 static volatile float g_ui_temperature_c = 24.0f;
 static volatile float g_ui_humidity_pct = 58.0f;
 static volatile uint8_t g_ui_water_level_pct = 72U;
@@ -293,12 +316,12 @@ static void tp_init(void) {
 
 static void init_actuator_outputs(void)
 {
-    gpio_set_direction(FAN_GPIO, GPIO_MODE_OUTPUT);
-	gpio_set_direction(PUMP_GPIO, GPIO_MODE_OUTPUT);
-	gpio_set_direction(GROW_LIGHT_GPIO, GPIO_MODE_OUTPUT);
+    for (size_t i = 0; i < sizeof(s_dosing_heads) / sizeof(s_dosing_heads[0]); i++) {
+        gpio_set_direction(s_dosing_heads[i].gpio, GPIO_MODE_OUTPUT);
+        gpio_set_level(s_dosing_heads[i].gpio, 0);
+    }
 
-    gpio_set_level(FAN_GPIO, 0);
-	gpio_set_level(PUMP_GPIO, 0);
+	gpio_set_direction(GROW_LIGHT_GPIO, GPIO_MODE_OUTPUT);
 	gpio_set_level(GROW_LIGHT_GPIO, 0);
 }
 
@@ -318,14 +341,14 @@ static void ui_light_switch_cb(bool is_on)
 static void ui_fert_a_switch_cb(bool is_on)
 {
     s_fert_a_on = is_on;
-    gpio_set_level(FAN_GPIO, is_on ? 1 : 0);
+    gpio_set_level(FERT_A_GPIO, is_on ? 1 : 0);
     ESP_LOGI(TAG, "Fertilizer A pump %s", is_on ? "ON" : "OFF");
 }
 
 static void ui_fert_b_switch_cb(bool is_on)
 {
     s_fert_b_on = is_on;
-    gpio_set_level(PUMP_GPIO, is_on ? 1 : 0);
+    gpio_set_level(FERT_B_GPIO, is_on ? 1 : 0);
     ESP_LOGI(TAG, "Fertilizer B pump %s", is_on ? "ON" : "OFF");
 }
 
@@ -559,121 +582,191 @@ void ST7789(void *pvParameters)
     }
 }
 
-// Web UI button pressed callback functions
-static void routine_1_callback(bool is_on)
+// --- "Prime Line" routine ---
+// Runs the dosing head until its liquid sensor reports fluid in the line.
+
+static void prime_line_stop(dosing_head_t *head)
 {
-    (void)is_on;
-    
-    // If water is already present at the pipe
-    if (gpio_get_level(LIQUID_SENSOR_1) == 1){
-        ESP_LOGI(TAG_ROUTINE_1, "Water is already in the pipe, routine 1 will not start!");
-    }else {
-        routine_1_sample_timer_init();
+    gpio_set_level(head->gpio, 0);
+    head->prime_active = false;
 
-        s_routine_1_sample_count = 0;
-        s_routine_1_high_count = 0;
-
-        if (s_routine_1_sample_timer != NULL) {
-            if (esp_timer_is_active(s_routine_1_sample_timer)) {
-                esp_timer_stop(s_routine_1_sample_timer);
-            }
-            esp_err_t err = esp_timer_start_periodic(s_routine_1_sample_timer, ROUTINE_1_SAMPLE_PERIOD_US);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG_ROUTINE_1, "Failed to start routine 1 sample timer: %s", esp_err_to_name(err));
-                return;
-            }
-        } else {
-            ESP_LOGE(TAG_ROUTINE_1, "Routine 1 sample timer is not initialized");
-            return;
-        }
-
-        gpio_set_level(FAN_GPIO, 1); // turn on the pump
-        gpio_set_level(PUMP_GPIO, 1); // turn on the valve
-        routine_1_active = true;
-
-        ESP_LOGI(TAG_ROUTINE_1, "Routine 1 Started!");
+    if (head->prime_sample_timer != NULL && esp_timer_is_active(head->prime_sample_timer)) {
+        esp_timer_stop(head->prime_sample_timer);
     }
 
+    head->prime_sample_count = 0;
+    head->prime_high_count = 0;
 }
 
-void delay_off_routine_2_task(void *args){
+static void prime_sample_timer_callback(void *arg)
+{
+    dosing_head_t *head = (dosing_head_t *)arg;
 
-    uint32_t target_concentration = (uint32_t)args;
+    if (!head->prime_active) {
+        return;
+    }
+
+    head->prime_sample_count++;
+    if (gpio_get_level(head->liquid_sensor) == 1) {
+        head->prime_high_count++;
+    }
+
+    if (head->prime_sample_count >= PRIME_SAMPLE_WINDOW) {
+        if (head->prime_high_count > PRIME_STOP_THRESHOLD) {
+            ESP_LOGI(head->tag,
+                     "Liquid detected in %u/%u samples, stopping line prime",
+                     (unsigned int)head->prime_high_count,
+                     (unsigned int)head->prime_sample_count);
+            prime_line_stop(head);
+        } else {
+            head->prime_sample_count = 0;
+            head->prime_high_count = 0;
+        }
+    }
+}
+
+static void prime_sample_timer_init(dosing_head_t *head)
+{
+    if (head->prime_sample_timer != NULL) {
+        return;
+    }
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = &prime_sample_timer_callback,
+        .arg = head,
+        .name = "prime_liquid_sample"
+    };
+
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &head->prime_sample_timer));
+}
+
+static void prime_line_toggle(dosing_head_t *head)
+{
+    if (head->prime_active) {
+        ESP_LOGI(head->tag, "Line prime stopped by user");
+        prime_line_stop(head);
+        return;
+    }
+
+    // If water is already present at the pipe
+    if (gpio_get_level(head->liquid_sensor) == 1) {
+        ESP_LOGI(head->tag, "Liquid is already in the line, prime will not start!");
+        return;
+    }
+
+    prime_sample_timer_init(head);
+
+    head->prime_sample_count = 0;
+    head->prime_high_count = 0;
+
+    if (esp_timer_is_active(head->prime_sample_timer)) {
+        esp_timer_stop(head->prime_sample_timer);
+    }
+    esp_err_t err = esp_timer_start_periodic(head->prime_sample_timer, PRIME_SAMPLE_PERIOD_US);
+    if (err != ESP_OK) {
+        ESP_LOGE(head->tag, "Failed to start prime sample timer: %s", esp_err_to_name(err));
+        return;
+    }
+
+    gpio_set_level(head->gpio, 1); // turn on the pump + valve set
+    head->prime_active = true;
+
+    ESP_LOGI(head->tag, "Line prime started!");
+}
+
+// --- "Shot Dose" routine ---
+// Fires the dosing head for a fixed duration to inject one dose of fertilizer.
+
+static void shot_dose_timer_callback(void *arg)
+{
+    dosing_head_t *head = (dosing_head_t *)arg;
+
+    gpio_set_level(head->gpio, 0);
+    head->shot_dose_active = false;
+}
+
+static void shot_dose_start(dosing_head_t *head)
+{
+    if (head->shot_dose_timer == NULL) {
+        const esp_timer_create_args_t timer_args = {
+            .callback = &shot_dose_timer_callback,
+            .arg = head,
+            .name = "shot_dose_off"
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &head->shot_dose_timer));
+    }
+
+    if (esp_timer_is_active(head->shot_dose_timer)) {
+        ESP_LOGI(head->tag, "Shot dose already in progress");
+        return;
+    }
+
+    ESP_LOGI(head->tag, "Shot dose started");
+    head->shot_dose_active = true;
+    gpio_set_level(head->gpio, 1);
+
+    ESP_ERROR_CHECK(esp_timer_start_once(head->shot_dose_timer, SHOT_DOSE_DURATION_US));
+}
+
+// --- "Target Dose" routine ---
+// Repeatedly shot-doses the head until the EC sensor reaches the target setpoint.
+
+static void target_dose_task(void *args)
+{
+    dosing_head_t *head = (dosing_head_t *)args;
+    uint32_t target_ec = (uint32_t)(head->target_ec * 1000.0f); // mS/cm -> uS/cm
     bool target_reached = false;
 
-    routine_2_active = true;
-    ESP_LOGI(TAG_ROUTINE_2, "Routine 2 task started, target concentration: %u", (unsigned int)target_concentration);
+    ESP_LOGI(head->tag, "Target dosing started, target EC: %u", (unsigned int)target_ec);
 
-    if (ba234_sensor_status != ESP_OK){
-        gpio_set_level(FAN_GPIO, 0);
-        gpio_set_level(PUMP_GPIO, 0);
-        ESP_LOGI(TAG_ROUTINE_2, "BA234 Sensor Disconnected!, will not initiate nutrient dosing!");
-        routine_2_active = false;    
+    if (ba234_sensor_status != ESP_OK) {
+        gpio_set_level(head->gpio, 0);
+        ESP_LOGI(head->tag, "BA234 Sensor Disconnected!, will not initiate nutrient dosing!");
+        head->target_dose_active = false;
         vTaskDelete(NULL);
         return;
     }
 
-    while(1){
-        ESP_LOGI(TAG_ROUTINE_2, "Reading EC sensor data...");
+    while (head->target_dose_active) {
+        ESP_LOGI(head->tag, "Reading EC sensor data...");
         ba234_update_sensor_data();
-        
-        ESP_LOGI(TAG_ROUTINE_2, "Current EC: %u, target EC: %u", (unsigned int)ba234_sensor_data.ec, (unsigned int)target_concentration);
-        if (target_concentration > ba234_sensor_data.ec){
+
+        ESP_LOGI(head->tag, "Current EC: %u, target EC: %u", (unsigned int)ba234_sensor_data.ec, (unsigned int)target_ec);
+        if (target_ec > ba234_sensor_data.ec) {
             // Dose the fertilizer if current concentration is less than target
-            ESP_LOGI(TAG_ROUTINE_2, "Current EC is below target, dosing fertilizer...");
-            routine_3_callback(true);
-        }else{
-            ESP_LOGI(TAG_ROUTINE_2, "Target concentration reached, stopping dosing loop");
+            ESP_LOGI(head->tag, "Current EC is below target, dosing fertilizer...");
+            shot_dose_start(head);
+        } else {
+            ESP_LOGI(head->tag, "Target EC reached, stopping dosing loop");
             target_reached = true;
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(3000));
     }
 
-    // Target reached, turn off pump and valve
-    ESP_LOGI(TAG_ROUTINE_2, "Shutting down pump and valve, target_reached=%s", target_reached ? "true" : "false");
-    gpio_set_level(PUMP_GPIO, 0);
-    gpio_set_level(FAN_GPIO, 0);
-    routine_2_active = false;
+    ESP_LOGI(head->tag, "Target dosing finished, target_reached=%s", target_reached ? "true" : "false");
+    gpio_set_level(head->gpio, 0);
+    head->target_dose_active = false;
     vTaskDelete(NULL);
 }
 
-static void routine_2_callback(float nutrient_concentration){
-    s_routine_2_nutrient_concentration = nutrient_concentration;
-    ESP_LOGI("WEB_CB", "Routine 2 nutrient concentration set to %.1f", nutrient_concentration);
-    uint32_t nutrient_concentration_int = (uint32_t)(nutrient_concentration * 1000.0);
-    xTaskCreate(delay_off_routine_2_task, "delay routine 2 off", 4096, (void *)nutrient_concentration_int, 10, NULL);
-}
-
-void delay_off_routine_3_callback(void *args){
-    gpio_set_level(FAN_GPIO, 0);
-    gpio_set_level(PUMP_GPIO, 0);
-
-    routine_3_active = false;
-}
-
-static void routine_3_callback(bool is_on)
+static void target_dose_toggle(dosing_head_t *head, float target_ec)
 {
-    (void)is_on;
+    if (head->target_dose_active) {
+        // The dosing task notices the cleared flag and shuts the output off itself
+        ESP_LOGI(head->tag, "Target dosing cancel requested");
+        head->target_dose_active = false;
+        return;
+    }
 
-    ESP_LOGI("WEB_CB", "Routine 3 Called");
-    routine_3_active = true;
+    head->target_ec = target_ec;
+    ESP_LOGI(head->tag, "Target EC setpoint set to %.1f", target_ec);
 
-    esp_timer_handle_t timer_routine3;
-
-    const esp_timer_create_args_t timer_routine3_args = {
-        .callback = delay_off_routine_3_callback,
-        .arg = NULL,
-        .name = "delay_off_routine_3"
-    };
-
-    ESP_ERROR_CHECK(esp_timer_create(&timer_routine3_args, &timer_routine3));
-    
-    gpio_set_level(FAN_GPIO, 1);
-    gpio_set_level(PUMP_GPIO, 1);
-    
-    // 200ms shot for the nutrient dose
-    ESP_ERROR_CHECK(esp_timer_start_once(timer_routine3, 500000));
+    head->target_dose_active = true;
+    if (xTaskCreate(target_dose_task, "target_dose", 4096, head, 10, NULL) != pdPASS) {
+        ESP_LOGE(head->tag, "Failed to create target dose task");
+        head->target_dose_active = false;
+    }
 }
 
 static float normalize_nutrient_concentration(float nutrient_concentration)
@@ -710,18 +803,47 @@ static const httpd_uri_t root_uri = {
     .user_ctx  = NULL
 };
 
-static esp_err_t status_get_handler(httpd_req_t *req)
+static void build_status_json(char *buf, size_t buf_len)
 {
-    char json_response[180];
-    snprintf(json_response, sizeof(json_response),
-             "{\"routine_1\":%s,\"routine_2\":%s,\"routine_3\":%s,\"nutrient_concentration\":%.1f,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
-             routine_1_active ? "true" : "false",
-             routine_2_active ? "true" : "false",
-             routine_3_active ? "true" : "false",
-             s_routine_2_nutrient_concentration,
+    snprintf(buf, buf_len,
+             "{\"prime_a\":%s,\"prime_b\":%s,"
+             "\"target_dose_a\":%s,\"target_dose_b\":%s,"
+             "\"shot_dose_a\":%s,\"shot_dose_b\":%s,"
+             "\"target_ec_a\":%.1f,\"target_ec_b\":%.1f,"
+             "\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
+             s_dosing_heads[0].prime_active ? "true" : "false",
+             s_dosing_heads[1].prime_active ? "true" : "false",
+             s_dosing_heads[0].target_dose_active ? "true" : "false",
+             s_dosing_heads[1].target_dose_active ? "true" : "false",
+             s_dosing_heads[0].shot_dose_active ? "true" : "false",
+             s_dosing_heads[1].shot_dose_active ? "true" : "false",
+             s_dosing_heads[0].target_ec,
+             s_dosing_heads[1].target_ec,
              g_ui_temperature_c,
              g_ui_humidity_pct,
              g_ui_water_level_pct);
+}
+
+// Maps a device name suffix ("..._a" / "..._b") to its dosing head
+static dosing_head_t *dosing_head_from_device(const char *device)
+{
+    size_t len = strlen(device);
+    if (len < 2 || device[len - 2] != '_') {
+        return NULL;
+    }
+    if (device[len - 1] == 'a') {
+        return &s_dosing_heads[0];
+    }
+    if (device[len - 1] == 'b') {
+        return &s_dosing_heads[1];
+    }
+    return NULL;
+}
+
+static esp_err_t status_get_handler(httpd_req_t *req)
+{
+    char json_response[288];
+    build_status_json(json_response, sizeof(json_response));
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -741,35 +863,30 @@ static esp_err_t toggle_post_handler(httpd_req_t *req)
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         char device[16];
         if (httpd_query_key_value(query, "device", device, sizeof(device)) == ESP_OK) {
-            if (strcmp(device, "routine_1") == 0) {
-                routine_1_callback(!routine_1_active);
-            } else if (strcmp(device, "routine_2") == 0) {
-                char concentration_str[16];
-                float nutrient_concentration = s_routine_2_nutrient_concentration;
-                if (httpd_query_key_value(query, "concentration", concentration_str, sizeof(concentration_str)) == ESP_OK) {
-                    char *endptr = NULL;
-                    float requested_concentration = strtof(concentration_str, &endptr);
-                    if (endptr != concentration_str) {
-                        nutrient_concentration = normalize_nutrient_concentration(requested_concentration);
+            dosing_head_t *head = dosing_head_from_device(device);
+            if (head != NULL) {
+                if (strncmp(device, "prime_", 6) == 0) {
+                    prime_line_toggle(head);
+                } else if (strncmp(device, "target_dose_", 12) == 0) {
+                    char concentration_str[16];
+                    float target_ec = head->target_ec;
+                    if (httpd_query_key_value(query, "concentration", concentration_str, sizeof(concentration_str)) == ESP_OK) {
+                        char *endptr = NULL;
+                        float requested_ec = strtof(concentration_str, &endptr);
+                        if (endptr != concentration_str) {
+                            target_ec = normalize_nutrient_concentration(requested_ec);
+                        }
                     }
+                    target_dose_toggle(head, target_ec);
+                } else if (strncmp(device, "shot_dose_", 10) == 0) {
+                    shot_dose_start(head);
                 }
-                routine_2_callback(nutrient_concentration);
-            } else if (strcmp(device, "routine_3") == 0) {
-                routine_3_callback(!routine_3_active);
             }
         }
     }
-    
-    char json_response[180];
-    snprintf(json_response, sizeof(json_response),
-             "{\"routine_1\":%s,\"routine_2\":%s,\"routine_3\":%s,\"nutrient_concentration\":%.1f,\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
-             routine_1_active ? "true" : "false",
-             routine_2_active ? "true" : "false",
-             routine_3_active ? "true" : "false",
-             s_routine_2_nutrient_concentration,
-             g_ui_temperature_c,
-             g_ui_humidity_pct,
-             g_ui_water_level_pct);
+
+    char json_response[288];
+    build_status_json(json_response, sizeof(json_response));
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -937,59 +1054,15 @@ static void liquid_sensor_debug_task(void *pvParameters)
 }
 #endif
 
-static void routine_1_stop_outputs(void)
+// True while any head is firing a shot dose; background EC sampling pauses then
+static bool any_shot_dose_active(void)
 {
-    gpio_set_level(FAN_GPIO, 0);
-    gpio_set_level(PUMP_GPIO, 0);
-    routine_1_active = false;
-
-    if (s_routine_1_sample_timer != NULL && esp_timer_is_active(s_routine_1_sample_timer)) {
-        esp_timer_stop(s_routine_1_sample_timer);
-    }
-
-    s_routine_1_sample_count = 0;
-    s_routine_1_high_count = 0;
-}
-
-static void routine_1_sample_timer_callback(void *arg)
-{
-    (void)arg;
-
-    if (!routine_1_active) {
-        return;
-    }
-
-    s_routine_1_sample_count++;
-    if (gpio_get_level(LIQUID_SENSOR_1) == 1) {
-        s_routine_1_high_count++;
-    }
-
-    if (s_routine_1_sample_count >= ROUTINE_1_SAMPLE_WINDOW) {
-        if (s_routine_1_high_count > ROUTINE_1_STOP_THRESHOLD) {
-            ESP_LOGI(TAG_ROUTINE_1,
-                     "Liquid detected in %u/%u samples, stopping routine 1",
-                     (unsigned int)s_routine_1_high_count,
-                     (unsigned int)s_routine_1_sample_count);
-            routine_1_stop_outputs();
-        } else {
-            s_routine_1_sample_count = 0;
-            s_routine_1_high_count = 0;
+    for (size_t i = 0; i < sizeof(s_dosing_heads) / sizeof(s_dosing_heads[0]); i++) {
+        if (s_dosing_heads[i].shot_dose_active) {
+            return true;
         }
     }
-}
-
-static void routine_1_sample_timer_init(void)
-{
-    if (s_routine_1_sample_timer != NULL) {
-        return;
-    }
-
-    const esp_timer_create_args_t timer_args = {
-        .callback = &routine_1_sample_timer_callback,
-        .name = "routine_1_liquid_sample"
-    };
-
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_routine_1_sample_timer));
+    return false;
 }
 
 void ba234_read_task(void * arg){
@@ -1003,7 +1076,7 @@ void ba234_read_task(void * arg){
     }
 
     while(1){
-        if (!routine_3_active) {
+        if (!any_shot_dose_active()) {
             ba234_update_sensor_data();
         }
         vTaskDelay(pdMS_TO_TICKS(BA234_BACKGROUND_SAMPLE_DELAY_MS)); 
@@ -1014,10 +1087,11 @@ void ba234_read_task(void * arg){
 
 void app_main(void)
 {
-    // Initialize routine 1
+    // Initialize the "Prime Line" routine for both dosing heads
     gpio_install_isr_service(0);
     init_liquid_sensor_gpio();
-    routine_1_sample_timer_init();
+    prime_sample_timer_init(&s_dosing_heads[0]);
+    prime_sample_timer_init(&s_dosing_heads[1]);
 
 #if LIQUID_SENSOR_DEBUG
     xTaskCreate(liquid_sensor_debug_task, "liquid_dbg", 2048, NULL, 1, NULL);

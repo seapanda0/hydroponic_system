@@ -32,9 +32,10 @@
 #define SD_CMD GPIO_NUM_38
 #define SD_D0  GPIO_NUM_8
 
-#define FAN_GPIO         GPIO_NUM_7
+// Each fertilizer output drives a full dosing set (pump + valve wired in parallel)
+#define FERT_A_GPIO      GPIO_NUM_7
 #define HUMIDIFIER_GPIO  GPIO_NUM_6
-#define PUMP_GPIO        GPIO_NUM_5
+#define FERT_B_GPIO      GPIO_NUM_5
 
 #define WS2811_CTRL GPIO_NUM_15
 #define WS2811_D GPIO_NUM_16

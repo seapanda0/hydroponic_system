@@ -23,7 +23,7 @@ static bool IRAM_ATTR pump_timer_on_alarm(
 	(void)edata;
 	(void)user_ctx;
 
-	gpio_set_level(PUMP_GPIO, 0);
+	gpio_set_level(FERT_B_GPIO, 0);
 	return false;
 }
 
@@ -52,7 +52,7 @@ static void pump_timer_init(void)
 
 static void pump_on_for_duration(uint32_t duration_ms)
 {
-	gpio_set_level(PUMP_GPIO, 1);
+	gpio_set_level(FERT_B_GPIO, 1);
 
 	gptimer_stop(pump_timer);
 	ESP_ERROR_CHECK(gptimer_set_raw_count(pump_timer, 0));
@@ -83,7 +83,7 @@ static void uart_cmd_task(void *arg)
 			pump_on_for_duration(duration_ms);
 		} else if (rx_char == '0') {
 			ESP_LOGI(TAG, "Received '0': stopping pump immediately");
-			gpio_set_level(PUMP_GPIO, 0);
+			gpio_set_level(FERT_B_GPIO, 0);
 			gptimer_stop(pump_timer);
 		}
 	}
@@ -95,8 +95,8 @@ void app_main(void)
 	gpio_set_direction(WS2811_CTRL, GPIO_MODE_OUTPUT);
 	gpio_set_level(WS2811_CTRL, 1);
 
-	gpio_set_direction(PUMP_GPIO, GPIO_MODE_OUTPUT);
-	gpio_set_level(PUMP_GPIO, 0);
+	gpio_set_direction(FERT_B_GPIO, GPIO_MODE_OUTPUT);
+	gpio_set_level(FERT_B_GPIO, 0);
 
 	const uart_config_t uart_config = {
 		.baud_rate = 115200,
