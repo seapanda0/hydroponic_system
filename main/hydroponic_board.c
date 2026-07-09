@@ -23,16 +23,8 @@
 #include "kinetic_os.h"
 #include "ba234.h"
 
-// Web UI page embedded from webpage.html (see CMakeLists.txt EMBED_TXTFILES)
-extern const char web_ui_html[] asm("_binary_webpage_html_start");
-
-// WiFi and HTTP Server imports
-#include "esp_wifi.h"
-#include "esp_event.h"
-#include "nvs_flash.h"
-#include "esp_netif.h"
-#include "esp_http_server.h"
-#include "wifi.h"
+#include "wifi.h"        // WiFi credentials (SSID also shown on the display)
+#include "web_server.h"  // WiFi + HTTP server module
 
 // Dosing head state. Each head is a pump + valve set wired in parallel on a single GPIO.
 typedef struct {
@@ -110,8 +102,8 @@ ba234_sensor_data_t ba234_sensor_data;
 
 #define BA234_BACKGROUND_SAMPLE_DELAY_MS 50U
 
-#define LOG_SHT40_SENSOR  1   // temperature and humidity readings
-#define LOG_DYP_SENSOR    1   // ultrasonic distance and water level readings
+// Set to 1 to log one combined line of all non-BA234 sensor readings each cycle
+#define LOG_SENSORS 1
 
 #define INTERVAL 400
 static void wait_for_touch(void);
@@ -510,6 +502,10 @@ static void sensor_read_task(void *pvParameters)
     (void)pvParameters;
 
     while (1) {
+        // All non-BA234 sensor readings are collected into one log line per cycle
+        char log_line[192];
+        size_t pos = 0;
+
         if (g_sht4x_ready) {
             float temperature = 0.0f;
             float humidity = 0.0f;
@@ -523,14 +519,14 @@ static void sensor_read_task(void *pvParameters)
                 }
                 g_ui_temperature_c = temperature;
                 g_ui_humidity_pct = humidity_pct;
-#if LOG_SHT40_SENSOR
-                ESP_LOGI("SHT40", "Temperature: %.2f C, Humidity: %.2f %%", temperature, humidity);
-#endif
+                pos += snprintf(log_line + pos, sizeof(log_line) - pos,
+                                "Temp: %.2f C, Humidity: %.2f %%", temperature, humidity);
             } else {
-#if LOG_SHT40_SENSOR
-                ESP_LOGW("SHT40", "Read failed: %s", esp_err_to_name(ret));
-#endif
+                pos += snprintf(log_line + pos, sizeof(log_line) - pos,
+                                "SHT40 error: %s", esp_err_to_name(ret));
             }
+        } else {
+            pos += snprintf(log_line + pos, sizeof(log_line) - pos, "SHT40 offline");
         }
 
         if (g_dyp_ready) {
@@ -539,15 +535,23 @@ static void sensor_read_task(void *pvParameters)
             if (dyp_ret == ESP_OK) {
                 uint8_t water_left_percent = calculate_tank_water_percent(distance_cm);
                 g_ui_water_level_pct = water_left_percent;
-#if LOG_DYP_SENSOR
-                ESP_LOGI("DYP_SENSOR", "Distance: %u cm, Water left: %u%%", distance_cm, water_left_percent);
-#endif
+                pos += snprintf(log_line + pos, sizeof(log_line) - pos,
+                                " | Distance: %u cm, Water left: %u%%", distance_cm, water_left_percent);
             } else {
-#if LOG_DYP_SENSOR
-                ESP_LOGW("DYP_SENSOR", "Distance read failed: %s", esp_err_to_name(dyp_ret));
-#endif
+                pos += snprintf(log_line + pos, sizeof(log_line) - pos,
+                                " | DYP error: %s", esp_err_to_name(dyp_ret));
             }
+        } else {
+            pos += snprintf(log_line + pos, sizeof(log_line) - pos, " | DYP offline");
         }
+
+        snprintf(log_line + pos, sizeof(log_line) - pos,
+                 " | Liquid1: %d, Liquid2: %d",
+                 gpio_get_level(LIQUID_SENSOR_1), gpio_get_level(LIQUID_SENSOR_2));
+
+#if LOG_SENSORS
+        ESP_LOGI("SENSORS", "%s", log_line);
+#endif
 
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
@@ -617,7 +621,13 @@ void ST7789(void *pvParameters)
     kinetic_os_set_fertilizer_a_state(s_fert_a_on);
     kinetic_os_set_fertilizer_b_state(s_fert_b_on);
 
+    bool wifi_name_shown = false;
+
     while(1) {
+        if (wifi_is_connected() && !wifi_name_shown) {
+            kinetic_os_set_wifi_name(WIFI_SSID);
+            wifi_name_shown = true;
+        }
         kinetic_os_set_temperature(g_ui_temperature_c);
         kinetic_os_set_humidity(g_ui_humidity_pct);
         kinetic_os_set_water_level(g_ui_water_level_pct);
@@ -868,12 +878,20 @@ static float normalize_nutrient_concentration(float nutrient_concentration)
     return (float)tenths / 10.0f;
 }
 
+// Serializes BA234 reads between the background sampler and dosing tasks
+static SemaphoreHandle_t s_ba234_mutex = NULL;
+
+// LVGL is not thread-safe, so this function must not touch kinetic_os_*:
+// it runs in the sensor and dosing tasks, while LVGL runs in the display task.
+// The display task mirrors ba234_sensor_data onto the UI itself.
 static esp_err_t ba234_update_sensor_data(void)
 {
+    if (s_ba234_mutex != NULL) {
+        xSemaphoreTake(s_ba234_mutex, portMAX_DELAY);
+    }
     esp_err_t err = ba234_read_data(&ba234_sensor_data);
-    if (err == ESP_OK) {
-        kinetic_os_set_tds(ba234_sensor_data.tds);
-        kinetic_os_set_ec(ba234_sensor_data.ec);
+    if (s_ba234_mutex != NULL) {
+        xSemaphoreGive(s_ba234_mutex);
     }
     return err;
 }
@@ -911,21 +929,10 @@ static void ec_history_sampler_init(void)
     ESP_ERROR_CHECK(esp_timer_start_periodic(timer, (uint64_t)EC_HISTORY_SAMPLE_PERIOD_MS * 1000ULL));
 }
 
-// HTTP Server endpoint handlers
-static esp_err_t root_get_handler(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, web_ui_html, HTTPD_RESP_USE_STRLEN);
-}
+// --- Web module glue (see web_server.h) ---
 
-static const httpd_uri_t root_uri = {
-    .uri       = "/",
-    .method    = HTTP_GET,
-    .handler   = root_get_handler,
-    .user_ctx  = NULL
-};
-
-static void build_status_json(char *buf, size_t buf_len)
+// Builds the /api/status JSON
+void hydro_build_status_json(char *buf, size_t buf_len)
 {
     snprintf(buf, buf_len,
              "{\"prime_a\":%s,\"prime_b\":%s,"
@@ -979,72 +986,35 @@ static dose_group_t *dose_group_from_suffix(const char *suffix)
     return NULL;
 }
 
-static esp_err_t status_get_handler(httpd_req_t *req)
+// Executes a device command from /api/toggle. concentration < 0 means "not provided".
+void hydro_web_toggle(const char *device, float concentration)
 {
-    char json_response[384];
-    build_status_json(json_response, sizeof(json_response));
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
-}
-
-static const httpd_uri_t status_uri = {
-    .uri       = "/api/status",
-    .method    = HTTP_GET,
-    .handler   = status_get_handler,
-    .user_ctx  = NULL
-};
-
-static esp_err_t toggle_post_handler(httpd_req_t *req)
-{
-    char query[96];
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        char device[16];
-        if (httpd_query_key_value(query, "device", device, sizeof(device)) == ESP_OK) {
-            if (strncmp(device, "target_dose_", 12) == 0) {
-                dose_group_t *group = dose_group_from_suffix(device + 12);
-                if (group != NULL) {
-                    char concentration_str[16];
-                    float target_ec = group->target_ec;
-                    if (httpd_query_key_value(query, "concentration", concentration_str, sizeof(concentration_str)) == ESP_OK) {
-                        char *endptr = NULL;
-                        float requested_ec = strtof(concentration_str, &endptr);
-                        if (endptr != concentration_str) {
-                            target_ec = normalize_nutrient_concentration(requested_ec);
-                        }
-                    }
-                    target_dose_toggle(group, target_ec);
-                }
-            } else {
-                dosing_head_t *head = dosing_head_from_device(device);
-                if (head != NULL) {
-                    if (strncmp(device, "prime_", 6) == 0) {
-                        prime_line_toggle(head);
-                    } else if (strncmp(device, "shot_dose_", 10) == 0) {
-                        shot_dose_start(head);
-                    }
-                }
-            }
+    if (strncmp(device, "target_dose_", 12) == 0) {
+        dose_group_t *group = dose_group_from_suffix(device + 12);
+        if (group == NULL) {
+            return;
         }
+        float target_ec = group->target_ec;
+        if (concentration >= 0.0f) {
+            target_ec = normalize_nutrient_concentration(concentration);
+        }
+        target_dose_toggle(group, target_ec);
+        return;
     }
 
-    char json_response[384];
-    build_status_json(json_response, sizeof(json_response));
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+    dosing_head_t *head = dosing_head_from_device(device);
+    if (head == NULL) {
+        return;
+    }
+    if (strncmp(device, "prime_", 6) == 0) {
+        prime_line_toggle(head);
+    } else if (strncmp(device, "shot_dose_", 10) == 0) {
+        shot_dose_start(head);
+    }
 }
 
-static const httpd_uri_t toggle_uri = {
-    .uri       = "/api/toggle",
-    .method    = HTTP_POST,
-    .handler   = toggle_post_handler,
-    .user_ctx  = NULL
-};
-
-static esp_err_t ec_history_get_handler(httpd_req_t *req)
+// Builds the /api/ec_history JSON
+const char *hydro_build_ec_history_json(void)
 {
     // Handlers run serialized in the httpd task, so a static buffer is safe
     // and keeps ~1 KB off the httpd task stack.
@@ -1067,116 +1037,7 @@ static esp_err_t ec_history_get_handler(httpd_req_t *req)
     }
     snprintf(json_response + pos, sizeof(json_response) - pos, "]}");
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
-}
-
-static const httpd_uri_t ec_history_uri = {
-    .uri       = "/api/ec_history",
-    .method    = HTTP_GET,
-    .handler   = ec_history_get_handler,
-    .user_ctx  = NULL
-};
-
-static httpd_handle_t start_webserver(void)
-{
-    httpd_handle_t server = NULL;
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.lru_purge_enable = true;
-
-    ESP_LOGI("WEB_SERVER", "Starting server on port: '%d'", config.server_port);
-    if (httpd_start(&server, &config) == ESP_OK) {
-        ESP_LOGI("WEB_SERVER", "Registering URI handlers");
-        httpd_register_uri_handler(server, &root_uri);
-        httpd_register_uri_handler(server, &status_uri);
-        httpd_register_uri_handler(server, &toggle_uri);
-        httpd_register_uri_handler(server, &ec_history_uri);
-        return server;
-    }
-
-    ESP_LOGE("WEB_SERVER", "Error starting server!");
-    return NULL;
-}
-
-// WiFi Event Handler and Setup
-static int s_retry_num = 0;
-#define WIFI_MAXIMUM_RETRY 5
-
-static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                                int32_t event_id, void* event_data)
-{
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_num < WIFI_MAXIMUM_RETRY) {
-            esp_wifi_connect();
-            s_retry_num++;
-            ESP_LOGI("WIFI", "retry to connect to the AP");
-        } else {
-            ESP_LOGI("WIFI", "failed to connect to the AP");
-        }
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI("WIFI", "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
-        s_retry_num = 0;
-        
-        // Update LVGL UI screen with connection status & SSID
-        kinetic_os_set_wifi_name(WIFI_SSID);
-        
-        // Start web server when connected
-        start_webserver();
-    }
-}
-
-static void wifi_init_sta(void)
-{
-    // Initialize NVS
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-      ESP_ERROR_CHECK(nvs_flash_erase());
-      ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
-    ESP_LOGI("WIFI", "Initializing WiFi Station Mode...");
-    ESP_ERROR_CHECK(esp_netif_init());
-
-    esp_err_t err = esp_event_loop_create_default();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_ERROR_CHECK(err);
-    }
-    
-    esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    esp_event_handler_instance_t instance_any_id;
-    esp_event_handler_instance_t instance_got_ip;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                        ESP_EVENT_ANY_ID,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        &instance_any_id));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                        IP_EVENT_STA_GOT_IP,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        &instance_got_ip));
-
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASS,
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-        },
-    };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI("WIFI", "wifi_init_sta finished.");
+    return json_response;
 }
 
 void Sensors_Init(){
@@ -1216,24 +1077,6 @@ void init_liquid_sensor_gpio(){
     gpio_set_intr_type(LIQUID_SENSOR_2, GPIO_INTR_DISABLE);
 }
 
-// Set to 1 to enable liquid sensor debug logging task, 0 to disable
-#define LIQUID_SENSOR_DEBUG 1
-
-#if LIQUID_SENSOR_DEBUG
-static void liquid_sensor_debug_task(void *pvParameters)
-{
-    (void)pvParameters;
-    static const char *DBG_TAG = "LIQUID_DBG";
-    while (1) {
-        int s1 = gpio_get_level(LIQUID_SENSOR_1);
-        int s2 = gpio_get_level(LIQUID_SENSOR_2);
-        ESP_LOGI(DBG_TAG, "Sensor1 (GPIO%d)=%d  Sensor2 (GPIO%d)=%d",
-                 LIQUID_SENSOR_1, s1, LIQUID_SENSOR_2, s2);
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
-}
-#endif
-
 // True while any head is firing a shot dose; background EC sampling pauses then
 static bool any_shot_dose_active(void)
 {
@@ -1267,6 +1110,8 @@ void ba234_read_task(void * arg){
 
 void app_main(void)
 {
+    s_ba234_mutex = xSemaphoreCreateMutex();
+
     // Initialize the "Prime Line" routine for both dosing heads
     gpio_install_isr_service(0);
     init_liquid_sensor_gpio();
@@ -1275,10 +1120,6 @@ void app_main(void)
 
     // Start sampling EC for the web UI chart
     ec_history_sampler_init();
-
-#if LIQUID_SENSOR_DEBUG
-    xTaskCreate(liquid_sensor_debug_task, "liquid_dbg", 2048, NULL, 1, NULL);
-#endif
 
     // Start WiFi connection
     wifi_init_sta();
