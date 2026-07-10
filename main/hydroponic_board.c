@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -25,6 +26,7 @@
 
 #include "wifi.h"        // WiFi credentials (SSID also shown on the display)
 #include "web_server.h"  // WiFi + HTTP server module
+#include "settings_manager.h"  // NVS-backed dosing settings
 
 // Dosing head state. Each head is a pump + valve set wired in parallel on a single GPIO.
 typedef struct {
@@ -90,6 +92,8 @@ static dose_group_t s_dose_groups[DOSE_GROUP_COUNT] = {
 };
 
 // Function Prototypes
+static void wait_for_touch(void);
+
 static void prime_line_toggle(dosing_head_t *head);
 static void target_dose_toggle(dose_group_t *group, float target_ec);
 static void shot_dose_start(dosing_head_t *head);
@@ -106,7 +110,6 @@ ba234_sensor_data_t ba234_sensor_data;
 #define LOG_SENSORS 1
 
 #define INTERVAL 400
-static void wait_for_touch(void);
 #define WAIT wait_for_touch()
 
 static const char *TAG = "ST7789";
@@ -116,13 +119,8 @@ static const char *TAG = "ST7789";
 #define PRIME_SAMPLE_WINDOW 100U
 #define PRIME_STOP_THRESHOLD 70U
 
-// "Shot Dose" routine: how long the output stays on for a single dose.
-// Tune this to adjust the amount of fertilizer injected per dose.
-#define SHOT_DOSE_DURATION_MS 500U
-
-// "Target Dose" routine: time between a dose and the next EC measurement,
-// so the nutrient has time to mix properly before being measured.
-#define TARGET_DOSE_MIX_INTERVAL_MS 3000U
+// Shot dose duration and target dose mix interval now live in the settings
+// manager (NVS-backed, adjustable at runtime) — see settings_manager.h.
 
 // EC history served to the web UI chart: sample period and window (3 minutes)
 #define EC_HISTORY_SAMPLE_PERIOD_MS 2000U
@@ -141,6 +139,11 @@ static bool g_touch_ready = false;
 static volatile float g_ui_temperature_c = 24.0f;
 static volatile float g_ui_humidity_pct = 58.0f;
 static volatile uint8_t g_ui_water_level_pct = 72U;
+static volatile uint16_t g_ui_distance_mm = 0U;
+static volatile uint16_t g_ui_tds_ppm = 0U;
+static volatile uint32_t g_ui_ec_us_cm = 0U;
+static volatile uint32_t g_cal_raw_ec = 0U;   // raw EC (no k applied) for calibration page
+static volatile float    g_cal_temp   = 0.0f; // temperature from BA234 at last read
 
 #define CONFIG_WIDTH  240
 #define CONFIG_HEIGHT 320
@@ -412,6 +415,147 @@ static void ui_routine_cb(kinetic_routine_t routine)
     }
 }
 
+// Settings sliders on the LVGL settings page
+static void ui_shot_dose_setting_cb(uint32_t value_ms)
+{
+    settings_set_shot_dose_ms(value_ms);
+}
+
+static void ui_mix_interval_setting_cb(uint32_t value_ms)
+{
+    settings_set_mix_interval_ms(value_ms);
+}
+
+// +/- buttons beside the Target Dose A+B button
+static void ui_ec_adjust_cb(bool increase)
+{
+    float ec = settings_get_target_ec() + (increase ? SETTINGS_TARGET_EC_STEP : -SETTINGS_TARGET_EC_STEP);
+    settings_set_target_ec(ec); // setter clamps
+    // The adjusted target applies to the A+B group the button starts
+    s_dose_groups[DOSE_GROUP_AB].target_ec = settings_get_target_ec();
+}
+
+// --- EC Probe Single-Point Calibration ---
+// Algorithm: ba234-ec-calibration-step3.md
+// Settle 5 readings, then collect 25 at 2s intervals.
+// k = 1413 / mean; stored to NVS via settings_manager.
+
+#define CAL_SETTLE_COUNT    5
+#define CAL_SAMPLE_COUNT    25
+#define CAL_SAMPLE_PERIOD_MS 2000U
+#define CAL_REF_US_CM       1413.0f
+#define CAL_TEMP_LOW        24.0f
+#define CAL_TEMP_HIGH       26.0f
+
+typedef enum {
+    EC_CAL_IDLE = 0,
+    EC_CAL_SETTLING,
+    EC_CAL_SAMPLING,
+    EC_CAL_PASS,
+    EC_CAL_FAIL,
+} ec_cal_state_t;
+
+static ec_cal_state_t  s_cal_state        = EC_CAL_IDLE;
+static bool            s_cal_ignore_temp  = false;
+static uint8_t         s_cal_ticks        = 0;
+static float           s_cal_samples[CAL_SAMPLE_COUNT];
+static uint8_t         s_cal_n            = 0;
+static float           s_cal_mean         = 0.0f;
+static float           s_cal_k            = 1.0f;
+static const char     *s_cal_fail_reason  = "";
+
+static void ec_cal_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_cal_state == EC_CAL_IDLE ||
+        s_cal_state == EC_CAL_PASS ||
+        s_cal_state == EC_CAL_FAIL) {
+        return;
+    }
+
+    if (!s_cal_ignore_temp) {
+        float temp = g_cal_temp;
+        if (temp < CAL_TEMP_LOW || temp > CAL_TEMP_HIGH) {
+            s_cal_fail_reason = "Temp out of 24-26C";
+            return; // hold in current state without advancing
+        }
+        s_cal_fail_reason = ""; // temp OK now, clear warning
+    }
+
+    if (s_cal_state == EC_CAL_SETTLING) {
+        s_cal_ticks++;
+        if (s_cal_ticks >= CAL_SETTLE_COUNT) {
+            s_cal_state = EC_CAL_SAMPLING;
+            s_cal_n     = 0;
+        }
+        return;
+    }
+
+    if (s_cal_state == EC_CAL_SAMPLING) {
+        s_cal_samples[s_cal_n++] = (float)g_cal_raw_ec;
+        if (s_cal_n >= CAL_SAMPLE_COUNT) {
+            float sum = 0.0f;
+            for (int i = 0; i < CAL_SAMPLE_COUNT; i++) sum += s_cal_samples[i];
+            float mean = sum / CAL_SAMPLE_COUNT;
+            float var  = 0.0f;
+            for (int i = 0; i < CAL_SAMPLE_COUNT; i++) {
+                float d = s_cal_samples[i] - mean;
+                var += d * d;
+            }
+            float stddev = sqrtf(var / CAL_SAMPLE_COUNT);
+
+            if (mean < 1.0f) {
+                s_cal_state = EC_CAL_FAIL;
+                s_cal_fail_reason = "No signal";
+                return;
+            }
+            if ((stddev / mean) >= 0.02f) {
+                s_cal_state = EC_CAL_FAIL;
+                s_cal_fail_reason = "Unstable >2%";
+                return;
+            }
+            float pct_err = fabsf(mean - CAL_REF_US_CM) / CAL_REF_US_CM;
+            if (pct_err > 0.30f) {
+                s_cal_state = EC_CAL_FAIL;
+                s_cal_fail_reason = "Mean >30% off 1413";
+                return;
+            }
+            float k = CAL_REF_US_CM / mean;
+            if (k < SETTINGS_EC_CAL_FACTOR_MIN || k > SETTINGS_EC_CAL_FACTOR_MAX) {
+                s_cal_state = EC_CAL_FAIL;
+                s_cal_fail_reason = "k out of 0.7-1.3";
+                return;
+            }
+            s_cal_mean = mean;
+            s_cal_k    = k;
+            settings_set_ec_cal_factor(k);
+            s_cal_state = EC_CAL_PASS;
+        }
+    }
+}
+
+static void ui_cal_start_cb(void)
+{
+    if (s_cal_state == EC_CAL_SETTLING || s_cal_state == EC_CAL_SAMPLING) {
+        return;
+    }
+    s_cal_state       = EC_CAL_SETTLING;
+    s_cal_ticks       = 0;
+    s_cal_n           = 0;
+    s_cal_fail_reason = "";
+}
+
+static void ui_cal_clear_cb(void)
+{
+    settings_clear_ec_cal_factor();
+    s_cal_state = EC_CAL_IDLE;
+}
+
+static void ui_cal_ignore_temp_cb(void)
+{
+    s_cal_ignore_temp = !s_cal_ignore_temp;
+}
+
 static void wait_for_touch(void) {
     uint16_t tx, ty;
     
@@ -530,13 +674,14 @@ static void sensor_read_task(void *pvParameters)
         }
 
         if (g_dyp_ready) {
-            uint16_t distance_cm = 0;
-            esp_err_t dyp_ret = dyp_read_distance(&distance_cm, &dyp_handle);
+            uint16_t distance_mm = 0;
+            esp_err_t dyp_ret = dyp_read_distance(&distance_mm, &dyp_handle);
             if (dyp_ret == ESP_OK) {
-                uint8_t water_left_percent = calculate_tank_water_percent(distance_cm);
+                uint8_t water_left_percent = calculate_tank_water_percent(distance_mm);
                 g_ui_water_level_pct = water_left_percent;
+                g_ui_distance_mm = distance_mm;
                 pos += snprintf(log_line + pos, sizeof(log_line) - pos,
-                                " | Distance: %u cm, Water left: %u%%", distance_cm, water_left_percent);
+                                " | Distance: %u mm, Water left: %u%%", distance_mm, water_left_percent);
             } else {
                 pos += snprintf(log_line + pos, sizeof(log_line) - pos,
                                 " | DYP error: %s", esp_err_to_name(dyp_ret));
@@ -602,6 +747,15 @@ void ST7789(void *pvParameters)
     disp_drv.ver_res = 240;
     disp_drv.user_data = &dev;
     lv_disp_drv_register(&disp_drv);
+
+    // Switch to the basic (no-shadow) theme. LVGL's default theme draws drop-shadows
+    // on every lv_btn/lv_obj using the software renderer, which is slow enough to
+    // starve the IDLE task and trigger the task watchdog during a tileview scroll.
+    // lv_theme_basic applies no shadow styling; all our manual lv_obj_set_style_*
+    // calls still take effect.
+    lv_disp_set_theme(lv_disp_get_default(),
+                      lv_theme_basic_init(lv_disp_get_default()));
+
     static lv_indev_drv_t indev_drv;
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
@@ -613,13 +767,24 @@ void ST7789(void *pvParameters)
     kinetic_os_set_fertilizer_a_switch_cb(ui_fert_a_switch_cb);
     kinetic_os_set_fertilizer_b_switch_cb(ui_fert_b_switch_cb);
     kinetic_os_set_routine_cb(ui_routine_cb);
+    kinetic_os_set_shot_dose_setting_cb(ui_shot_dose_setting_cb);
+    kinetic_os_set_mix_interval_setting_cb(ui_mix_interval_setting_cb);
+    kinetic_os_set_ec_adjust_cb(ui_ec_adjust_cb);
+    kinetic_os_set_cal_start_cb(ui_cal_start_cb);
+    kinetic_os_set_cal_clear_cb(ui_cal_clear_cb);
+    kinetic_os_set_cal_ignore_temp_cb(ui_cal_ignore_temp_cb);
 
     kinetic_os_ui_init();
+
+    lv_timer_create(ec_cal_timer_cb, CAL_SAMPLE_PERIOD_MS, NULL);
 
 	kinetic_os_set_pump_state(s_pump_on);
 	kinetic_os_set_light_state(s_grow_light_on);
     kinetic_os_set_fertilizer_a_state(s_fert_a_on);
     kinetic_os_set_fertilizer_b_state(s_fert_b_on);
+    // Position the settings sliders at the persisted values
+    kinetic_os_set_shot_dose_setting(settings_get_shot_dose_ms());
+    kinetic_os_set_mix_interval_setting(settings_get_mix_interval_ms());
 
     bool wifi_name_shown = false;
 
@@ -631,12 +796,16 @@ void ST7789(void *pvParameters)
         kinetic_os_set_temperature(g_ui_temperature_c);
         kinetic_os_set_humidity(g_ui_humidity_pct);
         kinetic_os_set_water_level(g_ui_water_level_pct);
+        kinetic_os_set_distance(g_ui_distance_mm);
         // Update chemistry metrics if BA234 sensor is available
         if (ba234_sensor_status == ESP_OK) {
-            // TDS is provided in ppm
+            g_ui_tds_ppm  = ba234_sensor_data.tds;
+            g_cal_raw_ec  = ba234_sensor_data.ec;
+            g_cal_temp    = ba234_sensor_data.temperature;
+            uint32_t cal_ec = (uint32_t)(ba234_sensor_data.ec * settings_get_ec_cal_factor() + 0.5f);
+            g_ui_ec_us_cm = cal_ec;
             kinetic_os_set_tds(ba234_sensor_data.tds);
-            // EC is provided in us/cm by the sensor
-            kinetic_os_set_ec(ba234_sensor_data.ec);
+            kinetic_os_set_ec(cal_ec);
         }
         // Mirror routine states onto the routines page buttons
         kinetic_os_set_routine_state(KINETIC_ROUTINE_PRIME_A, s_dosing_heads[0].prime_active);
@@ -644,6 +813,64 @@ void ST7789(void *pvParameters)
         kinetic_os_set_routine_state(KINETIC_ROUTINE_SHOT_A, s_dosing_heads[0].shot_dose_active);
         kinetic_os_set_routine_state(KINETIC_ROUTINE_SHOT_B, s_dosing_heads[1].shot_dose_active);
         kinetic_os_set_routine_state(KINETIC_ROUTINE_TARGET_AB, s_dose_groups[DOSE_GROUP_AB].active);
+        kinetic_os_set_target_ec_display(s_dose_groups[DOSE_GROUP_AB].target_ec);
+        // Feed calibration page
+        {
+            kinetic_cal_update_t cu;
+            cu.raw_ec          = g_cal_raw_ec;
+            cu.temperature     = g_cal_temp;
+            cu.stored_k        = settings_get_ec_cal_factor();
+            cu.ignore_temp_active = s_cal_ignore_temp;
+            cu.running_avg     = 0;
+            cu.n_samples       = 0;
+            cu.seconds_remaining = 0;
+
+            static char cal_status_buf[40];
+            switch (s_cal_state) {
+                case EC_CAL_IDLE:
+                    if (s_cal_ignore_temp) {
+                        cu.status_text = "Ready (temp ignored)";
+                    } else {
+                        cu.status_text = "Place probe in 1413 uS/cm";
+                    }
+                    break;
+                case EC_CAL_SETTLING: {
+                    if (s_cal_fail_reason[0] != '\0') {
+                        snprintf(cal_status_buf, sizeof(cal_status_buf), "Wait: %s", s_cal_fail_reason);
+                    } else {
+                        snprintf(cal_status_buf, sizeof(cal_status_buf), "Settling %u/5", (unsigned)s_cal_ticks);
+                    }
+                    cu.status_text = cal_status_buf;
+                    cu.seconds_remaining = (uint8_t)((CAL_SETTLE_COUNT - s_cal_ticks) * (CAL_SAMPLE_PERIOD_MS / 1000U));
+                    break;
+                }
+                case EC_CAL_SAMPLING: {
+                    snprintf(cal_status_buf, sizeof(cal_status_buf), "Sampling %u/25", (unsigned)s_cal_n);
+                    cu.status_text = cal_status_buf;
+                    cu.seconds_remaining = (uint8_t)((CAL_SAMPLE_COUNT - s_cal_n) * (CAL_SAMPLE_PERIOD_MS / 1000U));
+                    cu.n_samples = s_cal_n;
+                    if (s_cal_n > 0) {
+                        float sum = 0.0f;
+                        for (int i = 0; i < s_cal_n; i++) sum += s_cal_samples[i];
+                        cu.running_avg = (uint32_t)(sum / s_cal_n + 0.5f);
+                    }
+                    break;
+                }
+                case EC_CAL_PASS: {
+                    snprintf(cal_status_buf, sizeof(cal_status_buf), "PASS  k=%.3f", (double)s_cal_k);
+                    cu.status_text = cal_status_buf;
+                    cu.running_avg = (uint32_t)(s_cal_mean + 0.5f);
+                    cu.n_samples   = CAL_SAMPLE_COUNT;
+                    break;
+                }
+                case EC_CAL_FAIL: {
+                    snprintf(cal_status_buf, sizeof(cal_status_buf), "FAIL: %s", s_cal_fail_reason);
+                    cu.status_text = cal_status_buf;
+                    break;
+                }
+            }
+            kinetic_os_update_cal(&cu);
+        }
         lv_timer_handler();
         vTaskDelay(pdMS_TO_TICKS(10));
         lv_tick_inc(10);
@@ -773,7 +1000,7 @@ static void shot_dose_start(dosing_head_t *head)
     head->shot_dose_active = true;
     gpio_set_level(head->gpio, 1);
 
-    ESP_ERROR_CHECK(esp_timer_start_once(head->shot_dose_timer, (uint64_t)SHOT_DOSE_DURATION_MS * 1000ULL));
+    ESP_ERROR_CHECK(esp_timer_start_once(head->shot_dose_timer, (uint64_t)settings_get_shot_dose_ms() * 1000ULL));
 }
 
 // --- "Target Dose" routine ---
@@ -814,7 +1041,7 @@ static void target_dose_task(void *args)
             break;
         }
         // Let the nutrient mix before the next EC measurement
-        vTaskDelay(pdMS_TO_TICKS(TARGET_DOSE_MIX_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(settings_get_mix_interval_ms()));
     }
 
     ESP_LOGI(group->tag, "Target dosing finished, target_reached=%s", target_reached ? "true" : "false");
@@ -859,6 +1086,7 @@ static void target_dose_toggle(dose_group_t *group, float target_ec)
     }
 
     group->target_ec = target_ec;
+    settings_set_target_ec(target_ec); // persist the last used target
     ESP_LOGI(group->tag, "Target EC setpoint set to %.1f", target_ec);
 
     group->active = true;
@@ -935,11 +1163,15 @@ static void ec_history_sampler_init(void)
 void hydro_build_status_json(char *buf, size_t buf_len)
 {
     snprintf(buf, buf_len,
-             "{\"prime_a\":%s,\"prime_b\":%s,"
+             "{\"light\":%s,"
+             "\"prime_a\":%s,\"prime_b\":%s,"
              "\"target_dose_a\":%s,\"target_dose_b\":%s,\"target_dose_ab\":%s,"
              "\"shot_dose_a\":%s,\"shot_dose_b\":%s,"
              "\"target_ec_a\":%.1f,\"target_ec_b\":%.1f,\"target_ec_ab\":%.1f,"
-             "\"temp\":%.1f,\"humidity\":%.1f,\"water\":%d}",
+             "\"temp\":%.1f,\"humidity\":%.1f,\"water\":%u,"
+             "\"tds\":%u,\"ec\":%lu,\"distance\":%u,"
+             "\"liquid1\":%s,\"liquid2\":%s}",
+             s_grow_light_on ? "true" : "false",
              s_dosing_heads[0].prime_active ? "true" : "false",
              s_dosing_heads[1].prime_active ? "true" : "false",
              s_dose_groups[DOSE_GROUP_A].active ? "true" : "false",
@@ -952,7 +1184,12 @@ void hydro_build_status_json(char *buf, size_t buf_len)
              s_dose_groups[DOSE_GROUP_AB].target_ec,
              g_ui_temperature_c,
              g_ui_humidity_pct,
-             g_ui_water_level_pct);
+             (unsigned)g_ui_water_level_pct,
+             (unsigned)g_ui_tds_ppm,
+             (unsigned long)g_ui_ec_us_cm,
+             (unsigned)g_ui_distance_mm,
+             gpio_get_level(LIQUID_SENSOR_1) ? "true" : "false",
+             gpio_get_level(LIQUID_SENSOR_2) ? "true" : "false");
 }
 
 // Maps a device name suffix ("..._a" / "..._b") to its dosing head
@@ -989,6 +1226,13 @@ static dose_group_t *dose_group_from_suffix(const char *suffix)
 // Executes a device command from /api/toggle. concentration < 0 means "not provided".
 void hydro_web_toggle(const char *device, float concentration)
 {
+    if (strcmp(device, "light") == 0) {
+        s_grow_light_on = !s_grow_light_on;
+        gpio_set_level(GROW_LIGHT_GPIO, s_grow_light_on ? 1 : 0);
+        ESP_LOGI(TAG, "Grow light %s (web)", s_grow_light_on ? "ON" : "OFF");
+        return;
+    }
+
     if (strncmp(device, "target_dose_", 12) == 0) {
         dose_group_t *group = dose_group_from_suffix(device + 12);
         if (group == NULL) {
@@ -1102,7 +1346,7 @@ void ba234_read_task(void * arg){
         if (!any_shot_dose_active()) {
             ba234_update_sensor_data();
         }
-        vTaskDelay(pdMS_TO_TICKS(BA234_BACKGROUND_SAMPLE_DELAY_MS)); 
+        // vTaskDelay(pdMS_TO_TICKS(BA234_BACKGROUND_SAMPLE_DELAY_MS)); 
         // There is no need for a long delay as sampling speed is limited by the sensor itself.
         // Average of 1880ms between samples.
     }
@@ -1110,6 +1354,12 @@ void ba234_read_task(void * arg){
 
 void app_main(void)
 {
+    // Load persisted dosing settings before anything uses them
+    settings_manager_init();
+    for (size_t i = 0; i < DOSE_GROUP_COUNT; i++) {
+        s_dose_groups[i].target_ec = settings_get_target_ec();
+    }
+
     s_ba234_mutex = xSemaphoreCreateMutex();
 
     // Initialize the "Prime Line" routine for both dosing heads

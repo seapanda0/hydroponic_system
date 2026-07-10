@@ -7,18 +7,31 @@ static lv_obj_t * page2;
 static lv_obj_t * page4;
 static lv_obj_t * page5; // Dosing routines
 static lv_obj_t * page6; // EC history chart
+static lv_obj_t * page7; // Dosing settings
 static lv_obj_t * btn_nav1;
 static lv_obj_t * btn_nav2;
 static lv_obj_t * btn_nav3;
 static lv_obj_t * btn_nav4;
 static lv_obj_t * btn_nav5;
-#define NAV_BTN_COUNT 5
+static lv_obj_t * btn_nav6;
+#define NAV_BTN_COUNT 6
 
 // Page 5 Dynamic Elements (routine buttons)
 static lv_obj_t * p5_routine_btns[KINETIC_ROUTINE_COUNT];
 static lv_obj_t * p5_routine_labels[KINETIC_ROUTINE_COUNT];
 static bool p5_routine_active[KINETIC_ROUTINE_COUNT];
+static lv_obj_t * p5_target_ec_label;
+static int p5_target_ec_tenths = -1; // cached to skip redundant restyling
 static kinetic_os_routine_cb_t user_routine_cb = NULL;
+static kinetic_os_ec_adjust_cb_t user_ec_adjust_cb = NULL;
+
+// Page 7 Dynamic Elements (settings sliders)
+static lv_obj_t * p7_shot_slider;
+static lv_obj_t * p7_shot_value_label;
+static lv_obj_t * p7_mix_slider;
+static lv_obj_t * p7_mix_value_label;
+static kinetic_os_setting_cb_t user_shot_dose_setting_cb = NULL;
+static kinetic_os_setting_cb_t user_mix_interval_setting_cb = NULL;
 
 // Page 6 Dynamic Elements (EC chart)
 static lv_obj_t * p6_chart;
@@ -60,17 +73,19 @@ static lv_obj_t * p1_humidity_val;
 static lv_obj_t * p1_water_level_val;
 static lv_obj_t * p1_tds_val;
 static lv_obj_t * p1_ec_val;
+static lv_obj_t * p1_distance_val;
 
-// Page 2 dynamic references for TDS/EC
-static lv_obj_t * p2_tds_label;
-static lv_obj_t * p2_ec_label;
-static lv_obj_t * p2_tds_arc;
-static lv_obj_t * p2_ec_arc;
-
-// Page 2 Dynamic Elements
-static lv_obj_t * p2_auto_concentration_btn;
-static lv_obj_t * p2_auto_concentration_state;
-static bool p2_auto_concentration_on = false;
+// Page 2 calibration UI elements
+static lv_obj_t * p2_cal_raw_ec_label;
+static lv_obj_t * p2_cal_temp_label;
+static lv_obj_t * p2_cal_status_label;
+static lv_obj_t * p2_cal_timer_label;
+static lv_obj_t * p2_cal_avg_label;
+static lv_obj_t * p2_cal_k_label;
+static lv_obj_t * p2_cal_ignore_label;
+static kinetic_os_cal_start_cb_t       s_cal_start_cb       = NULL;
+static kinetic_os_cal_clear_cb_t       s_cal_clear_cb       = NULL;
+static kinetic_os_cal_ignore_temp_cb_t s_cal_ignore_temp_cb = NULL;
 
 // Fonts
 #define FONT_BASE &lv_font_montserrat_14
@@ -87,6 +102,7 @@ static void build_page2(void);
 static void build_page4(void);
 static void build_page5(void);
 static void build_page6(void);
+static void build_page7(void);
 static void bottom_nav_event_cb(lv_event_t * e);
 static void tileview_scroll_event_cb(lv_event_t * e);
 static void update_bottom_nav_styles(uint8_t active_idx);
@@ -109,12 +125,14 @@ void kinetic_os_ui_init(void) {
     page4 = lv_tileview_add_tile(root_tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
     page5 = lv_tileview_add_tile(root_tv, 3, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
     page6 = lv_tileview_add_tile(root_tv, 4, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    page7 = lv_tileview_add_tile(root_tv, 5, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
 
     build_page1();
     build_page2();
     build_page4();
     build_page5();
     build_page6();
+    build_page7();
 
     build_top_bar();
     build_bottom_bar();
@@ -169,7 +187,7 @@ static void build_bottom_bar(void) {
     lv_obj_clear_flag(flex, LV_OBJ_FLAG_SCROLLABLE); // Prevent accidental nav bar scrolling
 
     btn_nav1 = lv_btn_create(flex);
-    lv_obj_set_size(btn_nav1, 60, 38);
+    lv_obj_set_size(btn_nav1, 48, 38);
     lv_obj_set_style_radius(btn_nav1, 8, 0);
     lv_obj_add_event_cb(btn_nav1, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)0);
     lv_obj_t * l1 = lv_label_create(btn_nav1);
@@ -177,7 +195,7 @@ static void build_bottom_bar(void) {
     lv_obj_center(l1);
 
     btn_nav2 = lv_btn_create(flex);
-    lv_obj_set_size(btn_nav2, 60, 38);
+    lv_obj_set_size(btn_nav2, 48, 38);
     lv_obj_set_style_radius(btn_nav2, 8, 0);
     lv_obj_add_event_cb(btn_nav2, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)1);
     lv_obj_t * l2 = lv_label_create(btn_nav2);
@@ -185,7 +203,7 @@ static void build_bottom_bar(void) {
     lv_obj_center(l2);
 
     btn_nav3 = lv_btn_create(flex);
-    lv_obj_set_size(btn_nav3, 60, 38);
+    lv_obj_set_size(btn_nav3, 48, 38);
     lv_obj_set_style_radius(btn_nav3, 8, 0);
     lv_obj_add_event_cb(btn_nav3, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)2);
     lv_obj_t * l3 = lv_label_create(btn_nav3);
@@ -193,7 +211,7 @@ static void build_bottom_bar(void) {
     lv_obj_center(l3);
 
     btn_nav4 = lv_btn_create(flex);
-    lv_obj_set_size(btn_nav4, 60, 38);
+    lv_obj_set_size(btn_nav4, 48, 38);
     lv_obj_set_style_radius(btn_nav4, 8, 0);
     lv_obj_add_event_cb(btn_nav4, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)3);
     lv_obj_t * l4 = lv_label_create(btn_nav4);
@@ -201,16 +219,24 @@ static void build_bottom_bar(void) {
     lv_obj_center(l4);
 
     btn_nav5 = lv_btn_create(flex);
-    lv_obj_set_size(btn_nav5, 60, 38);
+    lv_obj_set_size(btn_nav5, 48, 38);
     lv_obj_set_style_radius(btn_nav5, 8, 0);
     lv_obj_add_event_cb(btn_nav5, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)4);
     lv_obj_t * l5 = lv_label_create(btn_nav5);
     lv_label_set_text(l5, LV_SYMBOL_IMAGE); // "EC Chart"
     lv_obj_center(l5);
+
+    btn_nav6 = lv_btn_create(flex);
+    lv_obj_set_size(btn_nav6, 48, 38);
+    lv_obj_set_style_radius(btn_nav6, 8, 0);
+    lv_obj_add_event_cb(btn_nav6, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)5);
+    lv_obj_t * l6 = lv_label_create(btn_nav6);
+    lv_label_set_text(l6, LV_SYMBOL_EDIT); // "Dosing Settings"
+    lv_obj_center(l6);
 }
 
 static void update_bottom_nav_styles(uint8_t active_idx) {
-    lv_obj_t * btns[NAV_BTN_COUNT] = {btn_nav1, btn_nav2, btn_nav3, btn_nav4, btn_nav5};
+    lv_obj_t * btns[NAV_BTN_COUNT] = {btn_nav1, btn_nav2, btn_nav3, btn_nav4, btn_nav5, btn_nav6};
     for(int i = 0; i < NAV_BTN_COUNT; i++) {
         if(i == active_idx) {
             lv_obj_set_style_bg_color(btns[i], KINETIC_COLOR_PRIMARY, 0);
@@ -236,21 +262,9 @@ static void tileview_scroll_event_cb(lv_event_t * e) {
     else if(active == page4) update_bottom_nav_styles(2);
     else if(active == page5) update_bottom_nav_styles(3);
     else if(active == page6) update_bottom_nav_styles(4);
+    else if(active == page7) update_bottom_nav_styles(5);
 }
 
-static void arc_tds_event_cb(lv_event_t * e) {
-    lv_obj_t * arc = lv_event_get_target(e);
-    lv_obj_t * label = (lv_obj_t *)lv_event_get_user_data(e);
-    int16_t v = lv_arc_get_value(arc);
-    lv_label_set_text_fmt(label, "%d", v);
-}
-
-static void arc_ec_event_cb(lv_event_t * e) {
-    lv_obj_t * arc = lv_event_get_target(e);
-    lv_obj_t * label = (lv_obj_t *)lv_event_get_user_data(e);
-    int16_t v = lv_arc_get_value(arc);
-    lv_label_set_text_fmt(label, "%d.%d", v / 10, v % 10); // Display 8 as 0.8
-}
 
 void kinetic_os_set_pump_state(bool on) {
     if(!p4_pump_sw) return;
@@ -350,16 +364,14 @@ void kinetic_os_set_water_level(uint8_t pct) {
     lv_label_set_text_fmt(p1_water_level_val, "%u%%", (unsigned)pct);
 }
 
+void kinetic_os_set_distance(uint16_t cm) {
+    if(!p1_distance_val) return;
+    lv_label_set_text_fmt(p1_distance_val, "%u mm", (unsigned)cm);
+}
+
 void kinetic_os_set_tds(uint16_t ppm) {
     if(p1_tds_val) {
-        lv_label_set_text_fmt(p1_tds_val, "%u", (unsigned)ppm);
-    }
-    if(p2_tds_label) {
-        lv_label_set_text_fmt(p2_tds_label, "%u", (unsigned)ppm);
-    }
-    if(p2_tds_arc) {
-        uint16_t v = ppm > 1000 ? 1000 : ppm;
-        lv_arc_set_value(p2_tds_arc, v);
+        lv_label_set_text_fmt(p1_tds_val, "%u PPM", (unsigned)ppm);
     }
 }
 
@@ -367,15 +379,7 @@ void kinetic_os_set_ec(uint32_t us_per_cm) {
     s_last_ec = us_per_cm;
     s_ec_seen = true;
     if(p1_ec_val) {
-        lv_label_set_text_fmt(p1_ec_val, "%u", (unsigned)us_per_cm);
-    }
-    if(p2_ec_label) {
-        lv_label_set_text_fmt(p2_ec_label, "%u", (unsigned)us_per_cm);
-    }
-    if(p2_ec_arc) {
-        uint32_t v = us_per_cm;
-        if(v > 5000U) v = 5000U;
-        lv_arc_set_value(p2_ec_arc, v);
+        lv_label_set_text_fmt(p1_ec_val, "%u uS/cm", (unsigned)us_per_cm);
     }
 }
 
@@ -419,347 +423,199 @@ static void fert_b_sw_event_cb(lv_event_t * e) {
     if(user_fert_b_cb) user_fert_b_cb(is_on);
 }
 
-static void set_auto_concentration_state(bool on) {
-    p2_auto_concentration_on = on;
-    if(!p2_auto_concentration_btn || !p2_auto_concentration_state) return;
 
-    if(on) {
-        lv_obj_set_style_bg_color(p2_auto_concentration_btn, lv_color_hex(0x183018), 0);
-        lv_obj_set_style_border_color(p2_auto_concentration_btn, KINETIC_COLOR_PRIMARY, 0);
-        lv_obj_set_style_border_opa(p2_auto_concentration_btn, LV_OPA_80, 0);
-        lv_label_set_text(p2_auto_concentration_state, "ON");
-        lv_obj_set_style_text_color(p2_auto_concentration_state, KINETIC_COLOR_PRIMARY, 0);
-    } else {
-        lv_obj_set_style_bg_color(p2_auto_concentration_btn, KINETIC_COLOR_SURFACE, 0);
-        lv_obj_set_style_border_color(p2_auto_concentration_btn, KINETIC_COLOR_OUTLINE, 0);
-        lv_obj_set_style_border_opa(p2_auto_concentration_btn, LV_OPA_50, 0);
-        lv_label_set_text(p2_auto_concentration_state, "OFF");
-        lv_obj_set_style_text_color(p2_auto_concentration_state, KINETIC_COLOR_TEXT_DIM, 0);
+static void build_page1(void) {
+    // 6-row list: sensor name left, live value right.
+    // 6*24 + 5*4 + 2 = 166px — fits the 170px content area.
+    const lv_coord_t ROW_W = 312;
+    const lv_coord_t ROW_H = 24;
+    const lv_coord_t PAD_X = 4;
+    const lv_coord_t GAP   = 4;
+    const lv_coord_t TOP   = 2;
+
+    const char *names[6] = {
+        "TEMPERATURE", "HUMIDITY", "TDS", "EC", "WATER LEVEL", "DISTANCE"
+    };
+    const char *defaults[6] = {
+        "-- C", "--%", "-- PPM", "-- uS/cm", "--%", "-- mm"
+    };
+    lv_obj_t **val_ptrs[6] = {
+        &p1_temp_val, &p1_humidity_val, &p1_tds_val,
+        &p1_ec_val, &p1_water_level_val, &p1_distance_val
+    };
+
+    for (int i = 0; i < 6; i++) {
+        lv_color_t val_color;
+        if      (i == 1) val_color = KINETIC_COLOR_TERTIARY;
+        else if (i == 3) val_color = KINETIC_COLOR_TERTIARY;
+        else if (i == 4) val_color = KINETIC_COLOR_SECONDARY;
+        else             val_color = KINETIC_COLOR_PRIMARY;
+
+        lv_coord_t y = TOP + i * (ROW_H + GAP);
+
+        lv_obj_t *row = lv_obj_create(page1);
+        lv_obj_set_size(row, ROW_W, ROW_H);
+        lv_obj_align(row, LV_ALIGN_TOP_LEFT, PAD_X, y);
+        lv_obj_set_style_bg_color(row, KINETIC_COLOR_SURFACE, 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_border_color(row, KINETIC_COLOR_OUTLINE, 0);
+        lv_obj_set_style_border_opa(row, LV_OPA_30, 0);
+        lv_obj_set_style_radius(row, 6, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *name_lbl = lv_label_create(row);
+        lv_label_set_text(name_lbl, names[i]);
+        lv_obj_set_style_text_color(name_lbl, KINETIC_COLOR_TEXT_DIM, 0);
+#if LV_FONT_MONTSERRAT_12
+        lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_12, 0);
+#endif
+        lv_obj_align(name_lbl, LV_ALIGN_LEFT_MID, 8, 0);
+
+        *val_ptrs[i] = lv_label_create(row);
+        lv_label_set_text(*val_ptrs[i], defaults[i]);
+        lv_obj_set_style_text_color(*val_ptrs[i], val_color, 0);
+        lv_obj_set_style_text_font(*val_ptrs[i], FONT_BASE, 0);
+        lv_obj_align(*val_ptrs[i], LV_ALIGN_RIGHT_MID, -8, 0);
     }
 }
 
-static void auto_concentration_event_cb(lv_event_t * e) {
+static void cal_start_event_cb(lv_event_t * e) {
     (void)e;
-    set_auto_concentration_state(!p2_auto_concentration_on);
+    if(s_cal_start_cb) s_cal_start_cb();
 }
 
-static void build_page1(void) {
-    lv_obj_t * grid = lv_obj_create(page1);
-    lv_obj_set_size(grid, 320, 170);
-    lv_obj_center(grid);
-    lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(grid, 0, 0);
-    lv_obj_set_style_pad_all(grid, 4, 0);
-    lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+static void cal_clear_event_cb(lv_event_t * e) {
+    (void)e;
+    if(s_cal_clear_cb) s_cal_clear_cb();
+}
 
-    // 3x2 summary cards so all key water metrics fit in one page.
-    const lv_coord_t card_w = 100;
-    const lv_coord_t card_h = 76;
-    const lv_coord_t col_x[3] = {4, 109, 214};
-    const lv_coord_t row_y[2] = {4, 84};
+static void cal_ignore_temp_event_cb(lv_event_t * e) {
+    (void)e;
+    if(s_cal_ignore_temp_cb) s_cal_ignore_temp_cb();
+}
 
-    lv_obj_t * c1 = lv_obj_create(grid);
-    lv_obj_set_size(c1, card_w, card_h);
-    lv_obj_align(c1, LV_ALIGN_TOP_LEFT, col_x[0], row_y[0]);
-    lv_obj_set_style_bg_color(c1, KINETIC_COLOR_SURFACE, 0);
-    lv_obj_set_style_border_width(c1, 1, 0);
-    lv_obj_set_style_border_color(c1, KINETIC_COLOR_OUTLINE, 0);
-    lv_obj_set_style_border_opa(c1, LV_OPA_30, 0);
-    lv_obj_set_style_radius(c1, 8, 0);
-    lv_obj_clear_flag(c1, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t * c1_t = lv_label_create(c1);
-    lv_label_set_text(c1_t, "TEMPERATURE");
-    lv_obj_set_style_text_color(c1_t, KINETIC_COLOR_TEXT_DIM, 0);
-#if LV_FONT_MONTSERRAT_12
-    lv_obj_set_style_text_font(c1_t, &lv_font_montserrat_12, 0);
-#endif
-    lv_obj_align(c1_t, LV_ALIGN_TOP_LEFT, -4, -2);
-
-    p1_temp_val = lv_label_create(c1);
-    lv_label_set_text(p1_temp_val, "24.0 C");
-    lv_obj_set_style_text_color(p1_temp_val, KINETIC_COLOR_PRIMARY, 0);
-    lv_obj_set_style_text_font(p1_temp_val, FONT_BASE, 0);
-    lv_obj_align(p1_temp_val, LV_ALIGN_BOTTOM_LEFT, -4, 4);
-
-    lv_obj_t * c2 = lv_obj_create(grid);
-    lv_obj_set_size(c2, card_w, card_h);
-    lv_obj_align(c2, LV_ALIGN_TOP_LEFT, col_x[1], row_y[0]);
-    lv_obj_set_style_bg_color(c2, KINETIC_COLOR_SURFACE, 0);
-    lv_obj_set_style_border_width(c2, 1, 0);
-    lv_obj_set_style_border_color(c2, KINETIC_COLOR_OUTLINE, 0);
-    lv_obj_set_style_border_opa(c2, LV_OPA_30, 0);
-    lv_obj_set_style_radius(c2, 8, 0);
-    lv_obj_clear_flag(c2, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t * c2_t = lv_label_create(c2);
-    lv_label_set_text(c2_t, "HUMIDITY");
-    lv_obj_set_style_text_color(c2_t, KINETIC_COLOR_TEXT_DIM, 0);
-#if LV_FONT_MONTSERRAT_12
-    lv_obj_set_style_text_font(c2_t, &lv_font_montserrat_12, 0);
-#endif
-    lv_obj_align(c2_t, LV_ALIGN_TOP_LEFT, -4, -2);
-
-    p1_humidity_val = lv_label_create(c2);
-    lv_label_set_text(p1_humidity_val, "58.00%");
-    lv_obj_set_style_text_color(p1_humidity_val, KINETIC_COLOR_TERTIARY, 0);
-    lv_obj_set_style_text_font(p1_humidity_val, FONT_BASE, 0);
-    lv_obj_align(p1_humidity_val, LV_ALIGN_BOTTOM_LEFT, -4, 4);
-
-    lv_obj_t * c3 = lv_obj_create(grid);
-    lv_obj_set_size(c3, card_w, card_h);
-    lv_obj_align(c3, LV_ALIGN_TOP_LEFT, col_x[2], row_y[0]);
-    lv_obj_set_style_bg_color(c3, KINETIC_COLOR_SURFACE, 0);
-    lv_obj_set_style_border_width(c3, 1, 0);
-    lv_obj_set_style_border_color(c3, KINETIC_COLOR_OUTLINE, 0);
-    lv_obj_set_style_border_opa(c3, LV_OPA_30, 0);
-    lv_obj_set_style_radius(c3, 8, 0);
-    lv_obj_clear_flag(c3, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t * c3_t = lv_label_create(c3);
-    lv_label_set_text(c3_t, "TDS");
-    lv_obj_set_style_text_color(c3_t, KINETIC_COLOR_TEXT_DIM, 0);
-#if LV_FONT_MONTSERRAT_12
-    lv_obj_set_style_text_font(c3_t, &lv_font_montserrat_12, 0);
-#endif
-    lv_obj_align(c3_t, LV_ALIGN_TOP_LEFT, -4, -2);
-
-    lv_obj_t * c3_u = lv_label_create(c3);
-    lv_label_set_text(c3_u, "PPM");
-    lv_obj_set_style_text_color(c3_u, KINETIC_COLOR_TEXT_DIM, 0);
-#if LV_FONT_MONTSERRAT_12
-    lv_obj_set_style_text_font(c3_u, &lv_font_montserrat_12, 0);
-#endif
-    lv_obj_align(c3_u, LV_ALIGN_TOP_RIGHT, 2, -2);
-
-    p1_tds_val = lv_label_create(c3);
-    lv_label_set_text(p1_tds_val, "342");
-    lv_obj_set_style_text_color(p1_tds_val, KINETIC_COLOR_PRIMARY, 0);
-    lv_obj_set_style_text_font(p1_tds_val, FONT_BASE, 0);
-    lv_obj_align(p1_tds_val, LV_ALIGN_BOTTOM_LEFT, -4, 4);
-
-    lv_obj_t * c4 = lv_obj_create(grid);
-    lv_obj_set_size(c4, card_w, card_h);
-    lv_obj_align(c4, LV_ALIGN_TOP_LEFT, col_x[0], row_y[1]);
-    lv_obj_set_style_bg_color(c4, KINETIC_COLOR_SURFACE, 0);
-    lv_obj_set_style_border_width(c4, 1, 0);
-    lv_obj_set_style_border_color(c4, KINETIC_COLOR_OUTLINE, 0);
-    lv_obj_set_style_border_opa(c4, LV_OPA_30, 0);
-    lv_obj_set_style_radius(c4, 8, 0);
-    lv_obj_clear_flag(c4, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t * c4_t = lv_label_create(c4);
-    lv_label_set_text(c4_t, "EC");
-    lv_obj_set_style_text_color(c4_t, KINETIC_COLOR_TEXT_DIM, 0);
-#if LV_FONT_MONTSERRAT_12
-    lv_obj_set_style_text_font(c4_t, &lv_font_montserrat_12, 0);
-#endif
-    lv_obj_align(c4_t, LV_ALIGN_TOP_LEFT, -4, -2);
-
-    lv_obj_t * c4_u = lv_label_create(c4);
-    lv_label_set_text(c4_u, "uS/cm");
-    lv_obj_set_style_text_color(c4_u, KINETIC_COLOR_TEXT_DIM, 0);
-#if LV_FONT_MONTSERRAT_12
-    lv_obj_set_style_text_font(c4_u, &lv_font_montserrat_12, 0);
-#endif
-    lv_obj_align(c4_u, LV_ALIGN_TOP_RIGHT, 2, -2);
-
-    p1_ec_val = lv_label_create(c4);
-    lv_label_set_text(p1_ec_val, "0.8");
-    lv_obj_set_style_text_color(p1_ec_val, KINETIC_COLOR_TERTIARY, 0);
-    lv_obj_set_style_text_font(p1_ec_val, FONT_BASE, 0);
-    lv_obj_align(p1_ec_val, LV_ALIGN_BOTTOM_LEFT, -4, 4);
-
-    lv_obj_t * c5 = lv_obj_create(grid);
-    lv_obj_set_size(c5, card_w, card_h);
-    lv_obj_align(c5, LV_ALIGN_TOP_LEFT, col_x[1], row_y[1]);
-    lv_obj_set_style_bg_color(c5, KINETIC_COLOR_SURFACE, 0);
-    lv_obj_set_style_border_width(c5, 1, 0);
-    lv_obj_set_style_border_color(c5, KINETIC_COLOR_OUTLINE, 0);
-    lv_obj_set_style_border_opa(c5, LV_OPA_30, 0);
-    lv_obj_set_style_radius(c5, 8, 0);
-    lv_obj_clear_flag(c5, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t * c5_t = lv_label_create(c5);
-    lv_label_set_text(c5_t, "PH");
-    lv_obj_set_style_text_color(c5_t, KINETIC_COLOR_TEXT_DIM, 0);
-#if LV_FONT_MONTSERRAT_12
-    lv_obj_set_style_text_font(c5_t, &lv_font_montserrat_12, 0);
-#endif
-    lv_obj_align(c5_t, LV_ALIGN_TOP_LEFT, -4, -2);
-
-    lv_obj_t * c5_v = lv_label_create(c5);
-    lv_label_set_text(c5_v, "6.4");
-    lv_obj_set_style_text_color(c5_v, KINETIC_COLOR_SECONDARY, 0);
-    lv_obj_set_style_text_font(c5_v, FONT_BASE, 0);
-    lv_obj_align(c5_v, LV_ALIGN_BOTTOM_LEFT, -4, 4);
-
-    lv_obj_t * c6 = lv_obj_create(grid);
-    lv_obj_set_size(c6, card_w, card_h);
-    lv_obj_align(c6, LV_ALIGN_TOP_LEFT, col_x[2], row_y[1]);
-    lv_obj_set_style_bg_color(c6, KINETIC_COLOR_SURFACE, 0);
-    lv_obj_set_style_border_width(c6, 1, 0);
-    lv_obj_set_style_border_color(c6, KINETIC_COLOR_OUTLINE, 0);
-    lv_obj_set_style_border_opa(c6, LV_OPA_30, 0);
-    lv_obj_set_style_radius(c6, 8, 0);
-    lv_obj_clear_flag(c6, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t * c6_t = lv_label_create(c6);
-    lv_label_set_text(c6_t, "WATER LEVEL");
-    lv_obj_set_style_text_color(c6_t, KINETIC_COLOR_TEXT_DIM, 0);
-#if LV_FONT_MONTSERRAT_12
-    lv_obj_set_style_text_font(c6_t, &lv_font_montserrat_12, 0);
-#endif
-    lv_obj_align(c6_t, LV_ALIGN_TOP_LEFT, -4, -2);
-
-    p1_water_level_val = lv_label_create(c6);
-    lv_label_set_text(p1_water_level_val, "72%");
-    lv_obj_set_style_text_color(p1_water_level_val, KINETIC_COLOR_PRIMARY, 0);
-    lv_obj_set_style_text_font(p1_water_level_val, FONT_BASE, 0);
-    lv_obj_align(p1_water_level_val, LV_ALIGN_BOTTOM_LEFT, -4, 4);
+static lv_obj_t * cal_make_row(lv_coord_t y, lv_coord_t h) {
+    lv_obj_t * row = lv_obj_create(page2);
+    lv_obj_set_size(row, 312, h);
+    lv_obj_align(row, LV_ALIGN_TOP_LEFT, 4, y);
+    lv_obj_set_style_bg_color(row, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_border_color(row, KINETIC_COLOR_OUTLINE, 0);
+    lv_obj_set_style_border_opa(row, LV_OPA_30, 0);
+    lv_obj_set_style_radius(row, 6, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    return row;
 }
 
 static void build_page2(void) {
-    lv_obj_t * grid = lv_obj_create(page2);
-    lv_obj_set_size(grid, 320, 170);
-    lv_obj_center(grid);
-    lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(grid, 0, 0);
-    lv_obj_set_style_pad_all(grid, 5, 0);
-    lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(page2, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Left Column
-    lv_obj_t * left = lv_obj_create(grid);
-    lv_obj_set_size(left, 190, 160);
-    lv_obj_align(left, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_set_style_bg_opa(left, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(left, 0, 0);
-    lv_obj_set_style_pad_all(left, 0, 0);
-    lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(left, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    // Title
+    lv_obj_t * title = lv_label_create(page2);
+    lv_label_set_text(title, "EC CALIBRATION");
+    lv_obj_set_style_text_color(title, KINETIC_COLOR_PRIMARY, 0);
+    lv_obj_set_style_text_font(title, FONT_BASE, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 2);
 
-    // TDS Card
-    lv_obj_t * tds = lv_obj_create(left);
-    lv_obj_set_size(tds, 190, 75);
-    lv_obj_set_style_bg_color(tds, KINETIC_COLOR_SURFACE, 0);
-    lv_obj_set_style_border_width(tds, 0, 0);
-    lv_obj_set_style_border_color(tds, KINETIC_COLOR_PRIMARY, 0);
-    lv_obj_set_style_border_side(tds, LV_BORDER_SIDE_LEFT, 0);
-    lv_obj_set_style_border_width(tds, 4, 0); // Fake border-l-2
-    lv_obj_set_style_radius(tds, 8, 0);
-    lv_obj_clear_flag(tds, LV_OBJ_FLAG_SCROLLABLE);
+    // Row 1: live EC + temperature (y=20)
+    lv_obj_t * row1 = cal_make_row(20, 24);
+    lv_obj_t * ec_hdr = lv_label_create(row1);
+    lv_label_set_text(ec_hdr, "EC:");
+    lv_obj_set_style_text_color(ec_hdr, KINETIC_COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(ec_hdr, FONT_BASE, 0);
+    lv_obj_align(ec_hdr, LV_ALIGN_LEFT_MID, 8, 0);
 
-    p2_tds_label = lv_label_create(tds);
-    lv_label_set_text(p2_tds_label, "342");
-    lv_obj_set_style_text_color(p2_tds_label, KINETIC_COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(p2_tds_label, FONT_BASE, 0);
-    lv_obj_align(p2_tds_label, LV_ALIGN_CENTER, 0, 15);
+    p2_cal_raw_ec_label = lv_label_create(row1);
+    lv_label_set_text(p2_cal_raw_ec_label, "-- uS/cm");
+    lv_obj_set_style_text_color(p2_cal_raw_ec_label, KINETIC_COLOR_TERTIARY, 0);
+    lv_obj_set_style_text_font(p2_cal_raw_ec_label, FONT_BASE, 0);
+    lv_obj_align(p2_cal_raw_ec_label, LV_ALIGN_LEFT_MID, 30, 0);
 
-    p2_tds_arc = lv_arc_create(tds);
-    lv_obj_set_size(p2_tds_arc, 64, 64);
-    lv_obj_align(p2_tds_arc, LV_ALIGN_BOTTOM_MID, 0, 30);
-    lv_arc_set_bg_angles(p2_tds_arc, 150, 30);
-    lv_arc_set_range(p2_tds_arc, 0, 1000); // Expanded range for TDS
-    lv_arc_set_value(p2_tds_arc, 342);
-    lv_obj_set_style_arc_color(p2_tds_arc, KINETIC_COLOR_PRIMARY, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(p2_tds_arc, 4, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(p2_tds_arc, 4, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(p2_tds_arc, LV_OPA_COVER, LV_PART_KNOB);
-    lv_obj_set_style_bg_color(p2_tds_arc, KINETIC_COLOR_PRIMARY, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(p2_tds_arc, 4, LV_PART_KNOB);
-    lv_obj_add_event_cb(p2_tds_arc, arc_tds_event_cb, LV_EVENT_VALUE_CHANGED, p2_tds_label);
+    p2_cal_temp_label = lv_label_create(row1);
+    lv_label_set_text(p2_cal_temp_label, "T: --.-C");
+    lv_obj_set_style_text_color(p2_cal_temp_label, KINETIC_COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(p2_cal_temp_label, FONT_BASE, 0);
+    lv_obj_align(p2_cal_temp_label, LV_ALIGN_RIGHT_MID, -8, 0);
 
-    // EC Card
-    lv_obj_t * ec = lv_obj_create(left);
-    lv_obj_set_size(ec, 190, 75);
-    lv_obj_set_style_bg_color(ec, KINETIC_COLOR_SURFACE, 0);
-    lv_obj_set_style_border_color(ec, KINETIC_COLOR_TERTIARY, 0);
-    lv_obj_set_style_border_side(ec, LV_BORDER_SIDE_LEFT, 0);
-    lv_obj_set_style_border_width(ec, 4, 0);
-    lv_obj_set_style_radius(ec, 8, 0);
-    lv_obj_clear_flag(ec, LV_OBJ_FLAG_SCROLLABLE);
+    // Row 2: status + countdown (y=48)
+    lv_obj_t * row2 = cal_make_row(48, 24);
+    p2_cal_status_label = lv_label_create(row2);
+    lv_label_set_text(p2_cal_status_label, "READY");
+    lv_obj_set_style_text_color(p2_cal_status_label, KINETIC_COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(p2_cal_status_label, FONT_BASE, 0);
+    lv_obj_align(p2_cal_status_label, LV_ALIGN_LEFT_MID, 8, 0);
 
-    lv_obj_t * hflex2 = lv_obj_create(ec);
-    lv_obj_set_size(hflex2, 140, 24);
-    lv_obj_align(hflex2, LV_ALIGN_TOP_LEFT, -5, -8);
-    lv_obj_set_style_bg_opa(hflex2, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(hflex2, 0, 0);
-    lv_obj_set_style_pad_all(hflex2, 0, 0);
-    lv_obj_set_flex_flow(hflex2, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(hflex2, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(hflex2, 4, 0);
-    lv_obj_clear_flag(hflex2, LV_OBJ_FLAG_SCROLLABLE);
+    p2_cal_timer_label = lv_label_create(row2);
+    lv_label_set_text(p2_cal_timer_label, "");
+    lv_obj_set_style_text_color(p2_cal_timer_label, KINETIC_COLOR_PRIMARY, 0);
+    lv_obj_set_style_text_font(p2_cal_timer_label, FONT_BASE, 0);
+    lv_obj_align(p2_cal_timer_label, LV_ALIGN_RIGHT_MID, -8, 0);
 
-    lv_obj_t * ec_l = lv_label_create(hflex2);
-    lv_label_set_text(ec_l, "EC");
-    lv_obj_set_style_text_color(ec_l, KINETIC_COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(ec_l, FONT_BASE, 0);
+    // Row 3: running average + stored k (y=76)
+    lv_obj_t * row3 = cal_make_row(76, 24);
+    p2_cal_avg_label = lv_label_create(row3);
+    lv_label_set_text(p2_cal_avg_label, "AVG: --");
+    lv_obj_set_style_text_color(p2_cal_avg_label, KINETIC_COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(p2_cal_avg_label, FONT_BASE, 0);
+    lv_obj_align(p2_cal_avg_label, LV_ALIGN_LEFT_MID, 8, 0);
 
-    extern const lv_img_dsc_t bolt_img;
-    lv_obj_t * ec_icon = lv_img_create(hflex2);
-    lv_img_set_src(ec_icon, &bolt_img);
-    lv_obj_set_style_img_recolor_opa(ec_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_img_recolor(ec_icon, KINETIC_COLOR_TEXT_DIM, 0);
+    p2_cal_k_label = lv_label_create(row3);
+    lv_label_set_text(p2_cal_k_label, "k=1.000");
+    lv_obj_set_style_text_color(p2_cal_k_label, KINETIC_COLOR_TERTIARY, 0);
+    lv_obj_set_style_text_font(p2_cal_k_label, FONT_BASE, 0);
+    lv_obj_align(p2_cal_k_label, LV_ALIGN_RIGHT_MID, -8, 0);
 
-    lv_obj_t * u2 = lv_label_create(ec);
-    lv_label_set_text(u2, "mS/cm");
-    lv_obj_set_style_text_color(u2, KINETIC_COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(u2, FONT_BASE, 0);
-    lv_obj_align(u2, LV_ALIGN_TOP_RIGHT, 0, -5);
+    // Row 4: START button + IGNORE TEMP toggle (y=104)
+    lv_obj_t * start_btn = lv_btn_create(page2);
+    lv_obj_set_size(start_btn, 148, 32);
+    lv_obj_align(start_btn, LV_ALIGN_TOP_LEFT, 4, 104);
+    lv_obj_set_style_bg_color(start_btn, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_width(start_btn, 1, 0);
+    lv_obj_set_style_border_color(start_btn, KINETIC_COLOR_PRIMARY, 0);
+    lv_obj_set_style_border_opa(start_btn, LV_OPA_60, 0);
+    lv_obj_set_style_radius(start_btn, 8, 0);
+    lv_obj_add_event_cb(start_btn, cal_start_event_cb, LV_EVENT_CLICKED, NULL);
 
-    p2_ec_label = lv_label_create(ec);
-    lv_label_set_text(p2_ec_label, "0.8");
-    lv_obj_set_style_text_color(p2_ec_label, KINETIC_COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(p2_ec_label, FONT_BASE, 0);
-    lv_obj_align(p2_ec_label, LV_ALIGN_CENTER, 0, 15);
+    lv_obj_t * start_lbl = lv_label_create(start_btn);
+    lv_label_set_text(start_lbl, LV_SYMBOL_PLAY " START CAL");
+    lv_obj_set_style_text_color(start_lbl, KINETIC_COLOR_PRIMARY, 0);
+    lv_obj_set_style_text_font(start_lbl, FONT_BASE, 0);
+    lv_obj_center(start_lbl);
 
-    p2_ec_arc = lv_arc_create(ec);
-    lv_obj_set_size(p2_ec_arc, 64, 64);
-    lv_obj_align(p2_ec_arc, LV_ALIGN_BOTTOM_MID, 0, 30);
-    lv_arc_set_bg_angles(p2_ec_arc, 150, 30);
-    lv_arc_set_range(p2_ec_arc, 0, 5000);
-    lv_arc_set_value(p2_ec_arc, 800);
-    lv_obj_set_style_arc_color(p2_ec_arc, KINETIC_COLOR_TERTIARY, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(p2_ec_arc, 4, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(p2_ec_arc, 4, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(p2_ec_arc, LV_OPA_COVER, LV_PART_KNOB);
-    lv_obj_set_style_bg_color(p2_ec_arc, KINETIC_COLOR_TERTIARY, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(p2_ec_arc, 4, LV_PART_KNOB);
-    lv_obj_add_event_cb(p2_ec_arc, arc_ec_event_cb, LV_EVENT_VALUE_CHANGED, p2_ec_label);
+    lv_obj_t * ignore_btn = lv_btn_create(page2);
+    lv_obj_set_size(ignore_btn, 160, 32);
+    lv_obj_align(ignore_btn, LV_ALIGN_TOP_RIGHT, -4, 104);
+    lv_obj_set_style_bg_color(ignore_btn, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_width(ignore_btn, 1, 0);
+    lv_obj_set_style_border_color(ignore_btn, KINETIC_COLOR_OUTLINE, 0);
+    lv_obj_set_style_border_opa(ignore_btn, LV_OPA_50, 0);
+    lv_obj_set_style_radius(ignore_btn, 8, 0);
+    lv_obj_add_event_cb(ignore_btn, cal_ignore_temp_event_cb, LV_EVENT_CLICKED, NULL);
 
-    // Right Column (Auto Concentration Button)
-    p2_auto_concentration_btn = lv_btn_create(grid);
-    lv_obj_set_size(p2_auto_concentration_btn, 110, 160);
-    lv_obj_align(p2_auto_concentration_btn, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_bg_color(p2_auto_concentration_btn, KINETIC_COLOR_SURFACE, 0);
-    lv_obj_set_style_border_width(p2_auto_concentration_btn, 1, 0);
-    lv_obj_set_style_border_color(p2_auto_concentration_btn, KINETIC_COLOR_OUTLINE, 0);
-    lv_obj_set_style_radius(p2_auto_concentration_btn, 10, 0);
-    lv_obj_set_style_pad_all(p2_auto_concentration_btn, 8, 0);
-    lv_obj_add_event_cb(p2_auto_concentration_btn, auto_concentration_event_cb, LV_EVENT_CLICKED, NULL);
+    p2_cal_ignore_label = lv_label_create(ignore_btn);
+    lv_label_set_text(p2_cal_ignore_label, "IGNORE T: OFF");
+    lv_obj_set_style_text_color(p2_cal_ignore_label, KINETIC_COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(p2_cal_ignore_label, FONT_BASE, 0);
+    lv_obj_center(p2_cal_ignore_label);
 
-    lv_obj_t * t3 = lv_label_create(p2_auto_concentration_btn);
-    lv_label_set_text(t3, "AUTO MODE");
-    lv_label_set_long_mode(t3, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(t3, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(t3, 92);
-    lv_obj_set_style_text_color(t3, KINETIC_COLOR_TEXT_DIM, 0);
-    lv_obj_align(t3, LV_ALIGN_TOP_MID, 0, 18);
+    // Row 5: CLEAR calibration (y=140)
+    lv_obj_t * clear_btn = lv_btn_create(page2);
+    lv_obj_set_size(clear_btn, 312, 28);
+    lv_obj_align(clear_btn, LV_ALIGN_TOP_LEFT, 4, 140);
+    lv_obj_set_style_bg_color(clear_btn, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_width(clear_btn, 1, 0);
+    lv_obj_set_style_border_color(clear_btn, lv_color_hex(0xff5a5a), 0);
+    lv_obj_set_style_border_opa(clear_btn, LV_OPA_40, 0);
+    lv_obj_set_style_radius(clear_btn, 8, 0);
+    lv_obj_add_event_cb(clear_btn, cal_clear_event_cb, LV_EVENT_CLICKED, NULL);
 
-    extern const lv_img_dsc_t flask_img;
-    lv_obj_t * flask = lv_img_create(p2_auto_concentration_btn);
-    lv_img_set_src(flask, &flask_img);
-    lv_obj_set_style_img_recolor_opa(flask, LV_OPA_COVER, 0);
-    lv_obj_set_style_img_recolor(flask, KINETIC_COLOR_PRIMARY, 0);
-    lv_obj_align(flask, LV_ALIGN_CENTER, 0, 8);
-
-    p2_auto_concentration_state = lv_label_create(p2_auto_concentration_btn);
-    lv_label_set_text(p2_auto_concentration_state, "OFF");
-    lv_obj_set_style_text_font(p2_auto_concentration_state, FONT_BASE, 0);
-    lv_obj_set_style_text_color(p2_auto_concentration_state, KINETIC_COLOR_TEXT_DIM, 0);
-    lv_obj_align(p2_auto_concentration_state, LV_ALIGN_BOTTOM_MID, 0, -14);
-
-    set_auto_concentration_state(false);
+    lv_obj_t * clear_lbl = lv_label_create(clear_btn);
+    lv_label_set_text(clear_lbl, LV_SYMBOL_TRASH " CLEAR CALIBRATION");
+    lv_obj_set_style_text_color(clear_lbl, lv_color_hex(0xff5a5a), 0);
+    lv_obj_set_style_text_font(clear_lbl, FONT_BASE, 0);
+    lv_obj_center(clear_lbl);
 }
 
 static void build_page4(void) {
@@ -1058,6 +914,41 @@ static lv_obj_t * create_routine_btn(kinetic_routine_t routine, const char * tex
     return btn;
 }
 
+void kinetic_os_set_ec_adjust_cb(kinetic_os_ec_adjust_cb_t cb) { user_ec_adjust_cb = cb; }
+
+void kinetic_os_set_target_ec_display(float ec_ms_cm) {
+    if(!p5_target_ec_label) return;
+    int tenths = (int)(ec_ms_cm * 10.0f + 0.5f);
+    if(tenths == p5_target_ec_tenths) return; // called every UI tick, skip redundant redraws
+    p5_target_ec_tenths = tenths;
+    lv_label_set_text_fmt(p5_target_ec_label, "%d.%d mS/cm", tenths / 10, tenths % 10);
+}
+
+static void ec_adjust_btn_event_cb(lv_event_t * e) {
+    bool increase = (bool)(uintptr_t)lv_event_get_user_data(e);
+    if(user_ec_adjust_cb) user_ec_adjust_cb(increase);
+}
+
+static lv_obj_t * create_ec_adjust_btn(const char * text, bool increase,
+                                       lv_coord_t x, lv_coord_t y, lv_coord_t w, lv_coord_t h) {
+    lv_obj_t * btn = lv_btn_create(page5);
+    lv_obj_set_size(btn, w, h);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_style_bg_color(btn, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_color(btn, KINETIC_COLOR_OUTLINE, 0);
+    lv_obj_set_style_border_opa(btn, LV_OPA_50, 0);
+    lv_obj_set_style_radius(btn, 10, 0);
+    lv_obj_add_event_cb(btn, ec_adjust_btn_event_cb, LV_EVENT_CLICKED, (void*)(uintptr_t)increase);
+
+    lv_obj_t * label = lv_label_create(btn);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_color(label, KINETIC_COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(label, FONT_BASE, 0);
+    lv_obj_center(label);
+    return btn;
+}
+
 static void build_page5(void) {
     lv_obj_clear_flag(page5, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -1065,7 +956,22 @@ static void build_page5(void) {
     create_routine_btn(KINETIC_ROUTINE_PRIME_B, LV_SYMBOL_TINT " PRIME B", 165, 5, 150, 48);
     create_routine_btn(KINETIC_ROUTINE_SHOT_A, LV_SYMBOL_CHARGE " SHOT A", 5, 58, 150, 48);
     create_routine_btn(KINETIC_ROUTINE_SHOT_B, LV_SYMBOL_CHARGE " SHOT B", 165, 58, 150, 48);
-    create_routine_btn(KINETIC_ROUTINE_TARGET_AB, LV_SYMBOL_REFRESH " TARGET DOSE A+B", 5, 111, 310, 48);
+
+    // Bottom row: [-] [TARGET DOSE A+B + EC readout] [+]
+    create_ec_adjust_btn(LV_SYMBOL_MINUS, false, 5, 111, 48, 48);
+    lv_obj_t * target_btn = create_routine_btn(KINETIC_ROUTINE_TARGET_AB, LV_SYMBOL_REFRESH " TARGET DOSE A+B", 58, 111, 204, 48);
+    create_ec_adjust_btn(LV_SYMBOL_PLUS, true, 267, 111, 48, 48);
+
+    // Make room for the EC readout under the main label
+    lv_obj_align(p5_routine_labels[KINETIC_ROUTINE_TARGET_AB], LV_ALIGN_CENTER, 0, -8);
+
+    p5_target_ec_label = lv_label_create(target_btn);
+    lv_label_set_text(p5_target_ec_label, "-.- mS/cm");
+    lv_obj_set_style_text_color(p5_target_ec_label, KINETIC_COLOR_TEXT_DIM, 0);
+#if LV_FONT_MONTSERRAT_12
+    lv_obj_set_style_text_font(p5_target_ec_label, &lv_font_montserrat_12, 0);
+#endif
+    lv_obj_align(p5_target_ec_label, LV_ALIGN_CENTER, 0, 10);
 }
 
 // --- Page 6: EC History Chart ---
@@ -1133,3 +1039,161 @@ static void build_page6(void) {
     lv_obj_set_style_text_font(p6_ec_value_label, FONT_BASE, 0);
     lv_obj_align(p6_ec_value_label, LV_ALIGN_TOP_RIGHT, -4, 2);
 }
+
+// --- Page 7: Dosing Settings ---
+
+void kinetic_os_set_shot_dose_setting_cb(kinetic_os_setting_cb_t cb) { user_shot_dose_setting_cb = cb; }
+
+void kinetic_os_set_mix_interval_setting_cb(kinetic_os_setting_cb_t cb) { user_mix_interval_setting_cb = cb; }
+
+// Renders milliseconds as seconds with one decimal, e.g. 500 -> "0.5s"
+static void setting_label_set_seconds(lv_obj_t * label, uint32_t ms) {
+    lv_label_set_text_fmt(label, "%u.%us", (unsigned)(ms / 1000U), (unsigned)((ms % 1000U) / 100U));
+}
+
+static void shot_slider_event_cb(lv_event_t * e) {
+    lv_obj_t * slider = lv_event_get_target(e);
+    uint32_t ms = (uint32_t)lv_slider_get_value(slider) * KINETIC_SHOT_DOSE_STEP_MS;
+    if(lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+        setting_label_set_seconds(p7_shot_value_label, ms);
+    } else if(lv_event_get_code(e) == LV_EVENT_RELEASED) {
+        // Only commit on release so a drag doesn't spam NVS writes
+        if(user_shot_dose_setting_cb) user_shot_dose_setting_cb(ms);
+    }
+}
+
+static void mix_slider_event_cb(lv_event_t * e) {
+    lv_obj_t * slider = lv_event_get_target(e);
+    uint32_t ms = (uint32_t)lv_slider_get_value(slider) * KINETIC_MIX_INTERVAL_STEP_MS;
+    if(lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+        setting_label_set_seconds(p7_mix_value_label, ms);
+    } else if(lv_event_get_code(e) == LV_EVENT_RELEASED) {
+        if(user_mix_interval_setting_cb) user_mix_interval_setting_cb(ms);
+    }
+}
+
+void kinetic_os_set_shot_dose_setting(uint32_t ms) {
+    if(!p7_shot_slider || !p7_shot_value_label) return;
+    if(ms < KINETIC_SHOT_DOSE_MIN_MS) ms = KINETIC_SHOT_DOSE_MIN_MS;
+    if(ms > KINETIC_SHOT_DOSE_MAX_MS) ms = KINETIC_SHOT_DOSE_MAX_MS;
+    lv_slider_set_value(p7_shot_slider, ms / KINETIC_SHOT_DOSE_STEP_MS, LV_ANIM_OFF);
+    setting_label_set_seconds(p7_shot_value_label, ms);
+}
+
+void kinetic_os_set_mix_interval_setting(uint32_t ms) {
+    if(!p7_mix_slider || !p7_mix_value_label) return;
+    if(ms < KINETIC_MIX_INTERVAL_MIN_MS) ms = KINETIC_MIX_INTERVAL_MIN_MS;
+    if(ms > KINETIC_MIX_INTERVAL_MAX_MS) ms = KINETIC_MIX_INTERVAL_MAX_MS;
+    lv_slider_set_value(p7_mix_slider, ms / KINETIC_MIX_INTERVAL_STEP_MS, LV_ANIM_OFF);
+    setting_label_set_seconds(p7_mix_value_label, ms);
+}
+
+// Builds one settings row and returns the slider; *value_label_out gets the value label
+static lv_obj_t * create_setting_row(const char * title, lv_coord_t y,
+                                     int32_t range_min, int32_t range_max,
+                                     lv_event_cb_t event_cb, lv_obj_t ** value_label_out) {
+    lv_obj_t * card = lv_obj_create(page7);
+    lv_obj_set_size(card, 310, 76);
+    lv_obj_set_pos(card, 5, y);
+    lv_obj_set_style_bg_color(card, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, KINETIC_COLOR_OUTLINE, 0);
+    lv_obj_set_style_border_opa(card, LV_OPA_30, 0);
+    lv_obj_set_style_radius(card, 8, 0);
+    lv_obj_set_style_pad_all(card, 10, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * title_label = lv_label_create(card);
+    lv_label_set_text(title_label, title);
+    lv_obj_set_style_text_color(title_label, KINETIC_COLOR_TEXT_DIM, 0);
+#if LV_FONT_MONTSERRAT_12
+    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_12, 0);
+#endif
+    lv_obj_align(title_label, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t * value_label = lv_label_create(card);
+    lv_label_set_text(value_label, "-.-s");
+    lv_obj_set_style_text_color(value_label, KINETIC_COLOR_PRIMARY, 0);
+    lv_obj_set_style_text_font(value_label, FONT_BASE, 0);
+    lv_obj_align(value_label, LV_ALIGN_TOP_RIGHT, 0, 0);
+    *value_label_out = value_label;
+
+    lv_obj_t * slider = lv_slider_create(card);
+    lv_obj_set_size(slider, 270, 8);
+    lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_slider_set_range(slider, range_min, range_max);
+    lv_obj_set_style_bg_color(slider, KINETIC_COLOR_SURFACE_VARIANT, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(slider, KINETIC_COLOR_PRIMARY, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(slider, KINETIC_COLOR_PRIMARY, LV_PART_KNOB);
+    lv_obj_add_event_cb(slider, event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(slider, event_cb, LV_EVENT_RELEASED, NULL);
+    return slider;
+}
+
+static void build_page7(void) {
+    lv_obj_clear_flag(page7, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Slider values are in step units so LVGL snaps to the increments natively
+    p7_shot_slider = create_setting_row("SHOT DOSE", 5,
+                                        KINETIC_SHOT_DOSE_MIN_MS / KINETIC_SHOT_DOSE_STEP_MS,
+                                        KINETIC_SHOT_DOSE_MAX_MS / KINETIC_SHOT_DOSE_STEP_MS,
+                                        shot_slider_event_cb, &p7_shot_value_label);
+    p7_mix_slider = create_setting_row("MIX INTERVAL", 89,
+                                       KINETIC_MIX_INTERVAL_MIN_MS / KINETIC_MIX_INTERVAL_STEP_MS,
+                                       KINETIC_MIX_INTERVAL_MAX_MS / KINETIC_MIX_INTERVAL_STEP_MS,
+                                       mix_slider_event_cb, &p7_mix_value_label);
+
+    kinetic_os_set_shot_dose_setting(KINETIC_SHOT_DOSE_MIN_MS);
+    kinetic_os_set_mix_interval_setting(KINETIC_MIX_INTERVAL_MIN_MS);
+}
+
+// --- Page 2: EC Calibration API ---
+
+void kinetic_os_update_cal(const kinetic_cal_update_t *d) {
+    if(!d) return;
+
+    if(p2_cal_raw_ec_label) {
+        lv_label_set_text_fmt(p2_cal_raw_ec_label, "%u uS/cm", (unsigned)d->raw_ec);
+    }
+    if(p2_cal_temp_label) {
+        int16_t tt = (int16_t)(d->temperature * 10.0f + (d->temperature >= 0.0f ? 0.5f : -0.5f));
+        int16_t abs_tt = tt < 0 ? -tt : tt;
+        lv_label_set_text_fmt(p2_cal_temp_label, "T:%s%d.%dC",
+                              tt < 0 ? "-" : "", abs_tt / 10, abs_tt % 10);
+    }
+    if(p2_cal_status_label && d->status_text) {
+        lv_label_set_text(p2_cal_status_label, d->status_text);
+    }
+    if(p2_cal_timer_label) {
+        if(d->seconds_remaining > 0) {
+            lv_label_set_text_fmt(p2_cal_timer_label, "%us", (unsigned)d->seconds_remaining);
+        } else {
+            lv_label_set_text(p2_cal_timer_label, "");
+        }
+    }
+    if(p2_cal_avg_label) {
+        if(d->n_samples > 0) {
+            lv_label_set_text_fmt(p2_cal_avg_label, "AVG:%u n=%u",
+                                  (unsigned)d->running_avg, (unsigned)d->n_samples);
+        } else {
+            lv_label_set_text(p2_cal_avg_label, "AVG: --");
+        }
+    }
+    if(p2_cal_k_label) {
+        uint32_t k_thou = (uint32_t)(d->stored_k * 1000.0f + 0.5f);
+        lv_label_set_text_fmt(p2_cal_k_label, "k=%lu.%03lu", (unsigned long)(k_thou / 1000U), (unsigned long)(k_thou % 1000U));
+    }
+    if(p2_cal_ignore_label) {
+        if(d->ignore_temp_active) {
+            lv_label_set_text(p2_cal_ignore_label, "IGNORE T: ON");
+            lv_obj_set_style_text_color(p2_cal_ignore_label, KINETIC_COLOR_PRIMARY, 0);
+        } else {
+            lv_label_set_text(p2_cal_ignore_label, "IGNORE T: OFF");
+            lv_obj_set_style_text_color(p2_cal_ignore_label, KINETIC_COLOR_TEXT_DIM, 0);
+        }
+    }
+}
+
+void kinetic_os_set_cal_start_cb(kinetic_os_cal_start_cb_t cb)       { s_cal_start_cb = cb; }
+void kinetic_os_set_cal_clear_cb(kinetic_os_cal_clear_cb_t cb)       { s_cal_clear_cb = cb; }
+void kinetic_os_set_cal_ignore_temp_cb(kinetic_os_cal_ignore_temp_cb_t cb) { s_cal_ignore_temp_cb = cb; }

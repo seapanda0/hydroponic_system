@@ -39,6 +39,9 @@ void kinetic_os_set_water_level(uint8_t pct);
 void kinetic_os_set_tds(uint16_t ppm);
 void kinetic_os_set_ec(uint32_t us_per_cm);
 
+// Ultrasonic distance (raw cm from sensor)
+void kinetic_os_set_distance(uint16_t cm);
+
 // EC history chart: sample period and window size (3 minutes)
 #define KINETIC_EC_CHART_SAMPLE_PERIOD_MS 2000U
 #define KINETIC_EC_CHART_WINDOW_MS 180000U
@@ -60,6 +63,27 @@ void kinetic_os_set_routine_cb(kinetic_os_routine_cb_t cb);
 // Reflects the routine's running state on its button
 void kinetic_os_set_routine_state(kinetic_routine_t routine, bool active);
 
+// Dosing settings sliders (values in milliseconds)
+#define KINETIC_SHOT_DOSE_MIN_MS      500U
+#define KINETIC_SHOT_DOSE_STEP_MS     500U
+#define KINETIC_SHOT_DOSE_MAX_MS      5000U
+#define KINETIC_MIX_INTERVAL_MIN_MS   3000U
+#define KINETIC_MIX_INTERVAL_STEP_MS  1000U
+#define KINETIC_MIX_INTERVAL_MAX_MS   30000U
+
+typedef void (*kinetic_os_setting_cb_t)(uint32_t value_ms);
+void kinetic_os_set_shot_dose_setting_cb(kinetic_os_setting_cb_t cb);
+void kinetic_os_set_mix_interval_setting_cb(kinetic_os_setting_cb_t cb);
+// Reflect current values on the sliders (called from the display task)
+void kinetic_os_set_shot_dose_setting(uint32_t ms);
+void kinetic_os_set_mix_interval_setting(uint32_t ms);
+
+// +/- buttons beside "Target Dose A+B" on the routines page
+typedef void (*kinetic_os_ec_adjust_cb_t)(bool increase);
+void kinetic_os_set_ec_adjust_cb(kinetic_os_ec_adjust_cb_t cb);
+// Shows the current target EC (mS/cm) next to the Target Dose A+B button; deduplicates redundant calls
+void kinetic_os_set_target_ec_display(float ec_ms_cm);
+
 // Event hooks for broadcasting UI taps back to ESP
 typedef void (*kinetic_os_switch_cb_t)(bool is_on);
 void kinetic_os_set_pump_switch_cb(kinetic_os_switch_cb_t cb);
@@ -69,6 +93,26 @@ void kinetic_os_set_fertilizer_b_switch_cb(kinetic_os_switch_cb_t cb);
 
 void kinetic_os_set_light_intensity(uint8_t pct);
 typedef void (*kinetic_os_slider_cb_t)(uint8_t pct);
+
+// EC calibration page API
+typedef struct {
+    uint32_t raw_ec;
+    float    temperature;
+    const char *status_text;
+    uint8_t  seconds_remaining;
+    uint32_t running_avg;
+    uint8_t  n_samples;
+    float    stored_k;
+    bool     ignore_temp_active;
+} kinetic_cal_update_t;
+
+void kinetic_os_update_cal(const kinetic_cal_update_t *d);
+typedef void (*kinetic_os_cal_start_cb_t)(void);
+typedef void (*kinetic_os_cal_clear_cb_t)(void);
+typedef void (*kinetic_os_cal_ignore_temp_cb_t)(void);
+void kinetic_os_set_cal_start_cb(kinetic_os_cal_start_cb_t cb);
+void kinetic_os_set_cal_clear_cb(kinetic_os_cal_clear_cb_t cb);
+void kinetic_os_set_cal_ignore_temp_cb(kinetic_os_cal_ignore_temp_cb_t cb);
 
 #ifdef __cplusplus
 }

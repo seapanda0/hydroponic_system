@@ -227,8 +227,28 @@
                 <div class="sensor-value" id="humidity-val">--%</div>
             </div>
             <div class="sensor-card">
-                <div class="sensor-label">Water</div>
+                <div class="sensor-label">Water Level</div>
                 <div class="sensor-value" id="water-val">--%</div>
+            </div>
+            <div class="sensor-card">
+                <div class="sensor-label">EC</div>
+                <div class="sensor-value" id="ec-val">-- &micro;S/cm</div>
+            </div>
+            <div class="sensor-card">
+                <div class="sensor-label">TDS</div>
+                <div class="sensor-value" id="tds-val">-- PPM</div>
+            </div>
+            <div class="sensor-card">
+                <div class="sensor-label">Distance</div>
+                <div class="sensor-value" id="distance-val">-- mm</div>
+            </div>
+            <div class="sensor-card">
+                <div class="sensor-label">Liquid A</div>
+                <div class="sensor-value" id="liquid1-val">--</div>
+            </div>
+            <div class="sensor-card">
+                <div class="sensor-label">Liquid B</div>
+                <div class="sensor-value" id="liquid2-val">--</div>
             </div>
         </div>
 
@@ -238,6 +258,14 @@
                 <div class="chart-value" id="ec-now">-- &micro;S/cm</div>
             </div>
             <canvas id="ec-chart"></canvas>
+        </div>
+
+        <div class="control-group">
+            <div class="section-title">Lighting</div>
+            <button class="btn" id="btn-light" onclick="toggleDevice('light')">
+                <span>Grow Light</span>
+                <span class="btn-status" id="status-light">OFF</span>
+            </button>
         </div>
 
         <div class="control-group">
@@ -290,7 +318,8 @@
     </div>
 
     <script>
-        const TOGGLES = ['prime_a', 'target_dose_a', 'shot_dose_a',
+        const TOGGLES = ['light',
+                         'prime_a', 'target_dose_a', 'shot_dose_a',
                          'prime_b', 'target_dose_b', 'shot_dose_b',
                          'target_dose_ab'];
         const EC_INPUTS = ['a', 'b', 'ab'];
@@ -300,6 +329,11 @@
             document.getElementById('temp-val').innerText = status.temp.toFixed(1) + ' C';
             document.getElementById('humidity-val').innerText = status.humidity.toFixed(1) + '%';
             document.getElementById('water-val').innerText = status.water + '%';
+            document.getElementById('ec-val').innerHTML = status.ec + ' &micro;S/cm';
+            document.getElementById('tds-val').innerText = status.tds + ' PPM';
+            document.getElementById('distance-val').innerText = status.distance + ' mm';
+            document.getElementById('liquid1-val').innerText = status.liquid1 ? 'WET' : 'DRY';
+            document.getElementById('liquid2-val').innerText = status.liquid2 ? 'WET' : 'DRY';
 
             EC_INPUTS.forEach(key => {
                 const ecInput = document.getElementById('target-ec-' + key);
