@@ -29,9 +29,11 @@
 #include "settings_manager.h"  // NVS-backed dosing settings
 #include "hydro_mqtt.h"  // MQTT client (enable/disable via mqtt_config.h)
 
-// Dosing head state. Each head is a pump + valve set wired in parallel on a single GPIO.
+// Dosing head state. Each head has a dedicated pump GPIO and valve GPIO.
+// On V1 both point to the same pin (wired in parallel); on V2 they are separate.
 typedef struct {
-    gpio_num_t gpio;                        // output driving the pump + valve set
+    gpio_num_t pump_gpio;                   // output driving the pump
+    gpio_num_t valve_gpio;                  // output driving the valve
     gpio_num_t liquid_sensor;               // liquid sensor watching this head's line
     const char *tag;                        // log tag / readable name
     volatile bool prime_active;             // "Prime Line" routine running
@@ -44,13 +46,15 @@ typedef struct {
 
 static dosing_head_t s_dosing_heads[2] = {
     {
-        .gpio = FERT_A_GPIO,
-        .liquid_sensor = LIQUID_SENSOR_1,
+        .pump_gpio    = FERT_A_PUMP_GPIO,
+        .valve_gpio   = FERT_A_VALVE_GPIO,
+        .liquid_sensor = LIQUID_SENSOR_A,
         .tag = "Dosing Head A",
     },
     {
-        .gpio = FERT_B_GPIO,
-        .liquid_sensor = LIQUID_SENSOR_2,
+        .pump_gpio    = FERT_B_PUMP_GPIO,
+        .valve_gpio   = FERT_B_VALVE_GPIO,
+        .liquid_sensor = LIQUID_SENSOR_B,
         .tag = "Dosing Head B",
     },
 };
@@ -354,17 +358,27 @@ static void tp_init(void) {
 static void init_actuator_outputs(void)
 {
     for (size_t i = 0; i < sizeof(s_dosing_heads) / sizeof(s_dosing_heads[0]); i++) {
-        gpio_set_direction(s_dosing_heads[i].gpio, GPIO_MODE_OUTPUT);
-        gpio_set_level(s_dosing_heads[i].gpio, OUTPUT_OFF_LEVEL);
+        gpio_set_direction(s_dosing_heads[i].pump_gpio,  GPIO_MODE_OUTPUT);
+        gpio_set_level(s_dosing_heads[i].pump_gpio,  OUTPUT_OFF_LEVEL);
+        gpio_set_direction(s_dosing_heads[i].valve_gpio, GPIO_MODE_OUTPUT);
+        gpio_set_level(s_dosing_heads[i].valve_gpio, OUTPUT_OFF_LEVEL);
     }
 
-	gpio_set_direction(GROW_LIGHT_GPIO, GPIO_MODE_OUTPUT);
-	gpio_set_level(GROW_LIGHT_GPIO, OUTPUT_OFF_LEVEL);
+#ifdef CIRCULATION_PUMP_GPIO
+    gpio_set_direction(CIRCULATION_PUMP_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(CIRCULATION_PUMP_GPIO, OUTPUT_OFF_LEVEL);
+#endif
+
+    gpio_set_direction(GROW_LIGHT_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(GROW_LIGHT_GPIO, OUTPUT_OFF_LEVEL);
 }
 
 static void ui_pump_switch_cb(bool is_on)
 {
-	s_pump_on = is_on;
+    s_pump_on = is_on;
+#ifdef CIRCULATION_PUMP_GPIO
+    gpio_set_level(CIRCULATION_PUMP_GPIO, is_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
+#endif
     ESP_LOGI(TAG, "Circulation pump %s", is_on ? "ON" : "OFF");
     hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_PUMP, is_on);
 }
@@ -380,16 +394,18 @@ static void ui_light_switch_cb(bool is_on)
 static void ui_fert_a_switch_cb(bool is_on)
 {
     s_fert_a_on = is_on;
-    gpio_set_level(FERT_A_GPIO, is_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
-    ESP_LOGI(TAG, "Fertilizer A pump %s", is_on ? "ON" : "OFF");
+    gpio_set_level(FERT_A_VALVE_GPIO, is_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
+    gpio_set_level(FERT_A_PUMP_GPIO,  is_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
+    ESP_LOGI(TAG, "Fertilizer A %s", is_on ? "ON" : "OFF");
     hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_FERT_A, is_on);
 }
 
 static void ui_fert_b_switch_cb(bool is_on)
 {
     s_fert_b_on = is_on;
-    gpio_set_level(FERT_B_GPIO, is_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
-    ESP_LOGI(TAG, "Fertilizer B pump %s", is_on ? "ON" : "OFF");
+    gpio_set_level(FERT_B_VALVE_GPIO, is_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
+    gpio_set_level(FERT_B_PUMP_GPIO,  is_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
+    ESP_LOGI(TAG, "Fertilizer B %s", is_on ? "ON" : "OFF");
     hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_FERT_B, is_on);
 }
 
@@ -696,7 +712,7 @@ static void sensor_read_task(void *pvParameters)
 
         snprintf(log_line + pos, sizeof(log_line) - pos,
                  " | Liquid1: %d, Liquid2: %d",
-                 gpio_get_level(LIQUID_SENSOR_1), gpio_get_level(LIQUID_SENSOR_2));
+                 gpio_get_level(LIQUID_SENSOR_A), gpio_get_level(LIQUID_SENSOR_B));
 
 #if LOG_SENSORS
         ESP_LOGI("SENSORS", "%s", log_line);
@@ -709,16 +725,16 @@ static void sensor_read_task(void *pvParameters)
                 g_ui_temperature_c, g_ui_humidity_pct,
                 g_ui_water_level_pct, g_ui_distance_mm,
                 g_ui_ec_us_cm, g_ui_tds_ppm,
-                gpio_get_level(LIQUID_SENSOR_1) != 0,
-                gpio_get_level(LIQUID_SENSOR_2) != 0);
+                gpio_get_level(LIQUID_SENSOR_A) != 0,
+                gpio_get_level(LIQUID_SENSOR_B) != 0);
         } else if (++s_mqtt_ticks >= (HYDRO_MQTT_PUBLISH_INTERVAL_S / 2U)) {
             s_mqtt_ticks = 0;
             hydro_mqtt_publish_sensors(
                 g_ui_temperature_c, g_ui_humidity_pct,
                 g_ui_water_level_pct, g_ui_distance_mm,
                 g_ui_ec_us_cm, g_ui_tds_ppm,
-                gpio_get_level(LIQUID_SENSOR_1) != 0,
-                gpio_get_level(LIQUID_SENSOR_2) != 0);
+                gpio_get_level(LIQUID_SENSOR_A) != 0,
+                gpio_get_level(LIQUID_SENSOR_B) != 0);
         }
 
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -905,7 +921,8 @@ void ST7789(void *pvParameters)
 
 static void prime_line_stop(dosing_head_t *head)
 {
-    gpio_set_level(head->gpio, OUTPUT_OFF_LEVEL);
+    gpio_set_level(head->pump_gpio,  OUTPUT_OFF_LEVEL);
+    gpio_set_level(head->valve_gpio, OUTPUT_OFF_LEVEL);
     head->prime_active = false;
 
     if (head->prime_sample_timer != NULL && esp_timer_is_active(head->prime_sample_timer)) {
@@ -986,7 +1003,8 @@ static void prime_line_toggle(dosing_head_t *head)
         return;
     }
 
-    gpio_set_level(head->gpio, OUTPUT_ON_LEVEL); // turn on the pump + valve set
+    gpio_set_level(head->valve_gpio, OUTPUT_ON_LEVEL); // open valve before pump
+    gpio_set_level(head->pump_gpio,  OUTPUT_ON_LEVEL);
     head->prime_active = true;
 
     ESP_LOGI(head->tag, "Line prime started!");
@@ -999,7 +1017,8 @@ static void shot_dose_timer_callback(void *arg)
 {
     dosing_head_t *head = (dosing_head_t *)arg;
 
-    gpio_set_level(head->gpio, OUTPUT_OFF_LEVEL);
+    gpio_set_level(head->pump_gpio,  OUTPUT_OFF_LEVEL);
+    gpio_set_level(head->valve_gpio, OUTPUT_OFF_LEVEL);
     head->shot_dose_active = false;
 }
 
@@ -1021,7 +1040,8 @@ static void shot_dose_start(dosing_head_t *head)
 
     ESP_LOGI(head->tag, "Shot dose started");
     head->shot_dose_active = true;
-    gpio_set_level(head->gpio, OUTPUT_ON_LEVEL);
+    gpio_set_level(head->valve_gpio, OUTPUT_ON_LEVEL); // open valve before pump
+    gpio_set_level(head->pump_gpio,  OUTPUT_ON_LEVEL);
 
     ESP_ERROR_CHECK(esp_timer_start_once(head->shot_dose_timer, (uint64_t)settings_get_shot_dose_ms() * 1000ULL));
 }
@@ -1039,7 +1059,8 @@ static void target_dose_task(void *args)
 
     if (ba234_sensor_status != ESP_OK) {
         for (size_t i = 0; i < group->head_count; i++) {
-            gpio_set_level(group->heads[i]->gpio, OUTPUT_OFF_LEVEL);
+            gpio_set_level(group->heads[i]->pump_gpio,  OUTPUT_OFF_LEVEL);
+            gpio_set_level(group->heads[i]->valve_gpio, OUTPUT_OFF_LEVEL);
         }
         ESP_LOGI(group->tag, "BA234 Sensor Disconnected!, will not initiate nutrient dosing!");
         group->active = false;
@@ -1069,7 +1090,8 @@ static void target_dose_task(void *args)
 
     ESP_LOGI(group->tag, "Target dosing finished, target_reached=%s", target_reached ? "true" : "false");
     for (size_t i = 0; i < group->head_count; i++) {
-        gpio_set_level(group->heads[i]->gpio, OUTPUT_OFF_LEVEL);
+        gpio_set_level(group->heads[i]->pump_gpio,  OUTPUT_OFF_LEVEL);
+        gpio_set_level(group->heads[i]->valve_gpio, OUTPUT_OFF_LEVEL);
     }
     group->active = false;
     vTaskDelete(NULL);
@@ -1211,8 +1233,8 @@ void hydro_build_status_json(char *buf, size_t buf_len)
              (unsigned)g_ui_tds_ppm,
              (unsigned long)g_ui_ec_us_cm,
              (unsigned)g_ui_distance_mm,
-             gpio_get_level(LIQUID_SENSOR_1) ? "true" : "false",
-             gpio_get_level(LIQUID_SENSOR_2) ? "true" : "false");
+             gpio_get_level(LIQUID_SENSOR_A) ? "true" : "false",
+             gpio_get_level(LIQUID_SENSOR_B) ? "true" : "false");
 }
 
 // Maps a device name suffix ("..._a" / "..._b") to its dosing head
@@ -1338,11 +1360,11 @@ void Sensors_Init(){
 
 // init GPIO for liquid sensor
 void init_liquid_sensor_gpio(){
-    gpio_set_direction(LIQUID_SENSOR_1, GPIO_MODE_INPUT);
-    gpio_set_intr_type(LIQUID_SENSOR_1, GPIO_INTR_DISABLE);
+    gpio_set_direction(LIQUID_SENSOR_A, GPIO_MODE_INPUT);
+    gpio_set_intr_type(LIQUID_SENSOR_A, GPIO_INTR_DISABLE);
 
-    gpio_set_direction(LIQUID_SENSOR_2, GPIO_MODE_INPUT);
-    gpio_set_intr_type(LIQUID_SENSOR_2, GPIO_INTR_DISABLE);
+    gpio_set_direction(LIQUID_SENSOR_B, GPIO_MODE_INPUT);
+    gpio_set_intr_type(LIQUID_SENSOR_B, GPIO_INTR_DISABLE);
 }
 
 // True while any head is firing a shot dose; background EC sampling pauses then

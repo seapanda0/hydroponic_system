@@ -50,7 +50,7 @@
 #define FERT_B_VALVE_GPIO      SWITCH_3_GPIO
 
 #define CIRCULATION_PUMP_GPIO  SWITCH_5_GPIO
-#define GROW_LIGHT_GPIO SWITCH_6_GPIO
+#define GROW_LIGHT_GPIO        SWITCH_6_GPIO
 
 #define LIQUID_SENSOR_A IO_5V_1
 #define LIQUID_SENSOR_B IO_5V_2
@@ -92,16 +92,25 @@
 #define SD_CMD GPIO_NUM_38
 #define SD_D0  GPIO_NUM_8
 
-// Each fertilizer output drives a full dosing set (pump + valve wired in parallel)
-#define FERT_A_GPIO      GPIO_NUM_7
-#define HUMIDIFIER_GPIO  GPIO_NUM_6
-#define FERT_B_GPIO      GPIO_NUM_5
+// Pump and valve share one GPIO on V1 (wired in parallel)
+#define FERT_A_GPIO        GPIO_NUM_7
+#define FERT_A_PUMP_GPIO   FERT_A_GPIO
+#define FERT_A_VALVE_GPIO  FERT_A_GPIO
 
+#define HUMIDIFIER_GPIO    GPIO_NUM_6
+
+#define FERT_B_GPIO        GPIO_NUM_5
+#define FERT_B_PUMP_GPIO   FERT_B_GPIO
+#define FERT_B_VALVE_GPIO  FERT_B_GPIO
+
+// V1 has no dedicated circulation pump GPIO
 #define WS2811_CTRL GPIO_NUM_15
-#define WS2811_D GPIO_NUM_16
+#define WS2811_D    GPIO_NUM_16
 
 #define LIQUID_SENSOR_1 GPIO_NUM_45
 #define LIQUID_SENSOR_2 GPIO_NUM_46
+#define LIQUID_SENSOR_A LIQUID_SENSOR_1
+#define LIQUID_SENSOR_B LIQUID_SENSOR_2
 
 // Standard active-high outputs: writing 1 energizes the output
 #define OUTPUT_ON_LEVEL  1
