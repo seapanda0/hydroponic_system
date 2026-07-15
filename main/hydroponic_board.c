@@ -355,11 +355,11 @@ static void init_actuator_outputs(void)
 {
     for (size_t i = 0; i < sizeof(s_dosing_heads) / sizeof(s_dosing_heads[0]); i++) {
         gpio_set_direction(s_dosing_heads[i].gpio, GPIO_MODE_OUTPUT);
-        gpio_set_level(s_dosing_heads[i].gpio, 0);
+        gpio_set_level(s_dosing_heads[i].gpio, OUTPUT_OFF_LEVEL);
     }
 
 	gpio_set_direction(GROW_LIGHT_GPIO, GPIO_MODE_OUTPUT);
-	gpio_set_level(GROW_LIGHT_GPIO, 0);
+	gpio_set_level(GROW_LIGHT_GPIO, OUTPUT_OFF_LEVEL);
 }
 
 static void ui_pump_switch_cb(bool is_on)
@@ -372,7 +372,7 @@ static void ui_pump_switch_cb(bool is_on)
 static void ui_light_switch_cb(bool is_on)
 {
 	s_grow_light_on = is_on;
-	gpio_set_level(GROW_LIGHT_GPIO, is_on ? 1 : 0);
+	gpio_set_level(GROW_LIGHT_GPIO, is_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
 	ESP_LOGI(TAG, "Grow light %s", is_on ? "ON" : "OFF");
     hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_LIGHT, is_on);
 }
@@ -380,7 +380,7 @@ static void ui_light_switch_cb(bool is_on)
 static void ui_fert_a_switch_cb(bool is_on)
 {
     s_fert_a_on = is_on;
-    gpio_set_level(FERT_A_GPIO, is_on ? 1 : 0);
+    gpio_set_level(FERT_A_GPIO, is_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
     ESP_LOGI(TAG, "Fertilizer A pump %s", is_on ? "ON" : "OFF");
     hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_FERT_A, is_on);
 }
@@ -388,7 +388,7 @@ static void ui_fert_a_switch_cb(bool is_on)
 static void ui_fert_b_switch_cb(bool is_on)
 {
     s_fert_b_on = is_on;
-    gpio_set_level(FERT_B_GPIO, is_on ? 1 : 0);
+    gpio_set_level(FERT_B_GPIO, is_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
     ESP_LOGI(TAG, "Fertilizer B pump %s", is_on ? "ON" : "OFF");
     hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_FERT_B, is_on);
 }
@@ -905,7 +905,7 @@ void ST7789(void *pvParameters)
 
 static void prime_line_stop(dosing_head_t *head)
 {
-    gpio_set_level(head->gpio, 0);
+    gpio_set_level(head->gpio, OUTPUT_OFF_LEVEL);
     head->prime_active = false;
 
     if (head->prime_sample_timer != NULL && esp_timer_is_active(head->prime_sample_timer)) {
@@ -986,7 +986,7 @@ static void prime_line_toggle(dosing_head_t *head)
         return;
     }
 
-    gpio_set_level(head->gpio, 1); // turn on the pump + valve set
+    gpio_set_level(head->gpio, OUTPUT_ON_LEVEL); // turn on the pump + valve set
     head->prime_active = true;
 
     ESP_LOGI(head->tag, "Line prime started!");
@@ -999,7 +999,7 @@ static void shot_dose_timer_callback(void *arg)
 {
     dosing_head_t *head = (dosing_head_t *)arg;
 
-    gpio_set_level(head->gpio, 0);
+    gpio_set_level(head->gpio, OUTPUT_OFF_LEVEL);
     head->shot_dose_active = false;
 }
 
@@ -1021,7 +1021,7 @@ static void shot_dose_start(dosing_head_t *head)
 
     ESP_LOGI(head->tag, "Shot dose started");
     head->shot_dose_active = true;
-    gpio_set_level(head->gpio, 1);
+    gpio_set_level(head->gpio, OUTPUT_ON_LEVEL);
 
     ESP_ERROR_CHECK(esp_timer_start_once(head->shot_dose_timer, (uint64_t)settings_get_shot_dose_ms() * 1000ULL));
 }
@@ -1039,7 +1039,7 @@ static void target_dose_task(void *args)
 
     if (ba234_sensor_status != ESP_OK) {
         for (size_t i = 0; i < group->head_count; i++) {
-            gpio_set_level(group->heads[i]->gpio, 0);
+            gpio_set_level(group->heads[i]->gpio, OUTPUT_OFF_LEVEL);
         }
         ESP_LOGI(group->tag, "BA234 Sensor Disconnected!, will not initiate nutrient dosing!");
         group->active = false;
@@ -1069,7 +1069,7 @@ static void target_dose_task(void *args)
 
     ESP_LOGI(group->tag, "Target dosing finished, target_reached=%s", target_reached ? "true" : "false");
     for (size_t i = 0; i < group->head_count; i++) {
-        gpio_set_level(group->heads[i]->gpio, 0);
+        gpio_set_level(group->heads[i]->gpio, OUTPUT_OFF_LEVEL);
     }
     group->active = false;
     vTaskDelete(NULL);
@@ -1251,7 +1251,7 @@ void hydro_web_toggle(const char *device, float concentration)
 {
     if (strcmp(device, "light") == 0) {
         s_grow_light_on = !s_grow_light_on;
-        gpio_set_level(GROW_LIGHT_GPIO, s_grow_light_on ? 1 : 0);
+        gpio_set_level(GROW_LIGHT_GPIO, s_grow_light_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
         ESP_LOGI(TAG, "Grow light %s (web)", s_grow_light_on ? "ON" : "OFF");
         hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_LIGHT, s_grow_light_on);
         return;

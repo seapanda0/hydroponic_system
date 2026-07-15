@@ -3,7 +3,6 @@
 
 #include "driver/gpio.h"
 
-
 #define BOARD_V1 0
 #define BOARD_V2 1
 
@@ -44,13 +43,21 @@
 #define IO_5V_2 GPIO_NUM_18
 
 // Each fertilizer output drives a full dosing set (pump + valve wired in parallel)
-#define FERT_A_GPIO      SWITCH_1_GPIO
-#define FERT_B_GPIO      SWITCH_4_GPIO
+#define FERT_A_PUMP_GPIO       SWITCH_2_GPIO
+#define FERT_A_VALVE_GPIO      SWITCH_1_GPIO
 
+#define FERT_B_PUMP_GPIO       SWITCH_4_GPIO
+#define FERT_B_VALVE_GPIO      SWITCH_3_GPIO
+
+#define CIRCULATION_PUMP_GPIO  SWITCH_5_GPIO
 #define GROW_LIGHT_GPIO SWITCH_6_GPIO
 
-#define LIQUID_SENSOR_1 IO_5V_1
-#define LIQUID_SENSOR_2 IO_5V_1
+#define LIQUID_SENSOR_A IO_5V_1
+#define LIQUID_SENSOR_B IO_5V_2
+
+// Relay board is active-low: writing 0 energizes the output
+#define OUTPUT_ON_LEVEL  0
+#define OUTPUT_OFF_LEVEL 1
 
 #endif
 
@@ -95,6 +102,10 @@
 
 #define LIQUID_SENSOR_1 GPIO_NUM_45
 #define LIQUID_SENSOR_2 GPIO_NUM_46
+
+// Standard active-high outputs: writing 1 energizes the output
+#define OUTPUT_ON_LEVEL  1
+#define OUTPUT_OFF_LEVEL 0
 
 #endif
 
