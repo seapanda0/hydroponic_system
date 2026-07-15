@@ -128,9 +128,6 @@ static const char *TAG = "ST7789";
 #define EC_HISTORY_WINDOW_MS 180000U
 #define EC_HISTORY_POINT_COUNT (EC_HISTORY_WINDOW_MS / EC_HISTORY_SAMPLE_PERIOD_MS)
 
-// Map grow light control to a physical output pin.
-// Change this alias if your grow light relay is wired differently.
-#define GROW_LIGHT_GPIO WS2811_CTRL
 
 static bool s_pump_on = false;
 static bool s_grow_light_on = false;
