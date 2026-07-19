@@ -1072,8 +1072,10 @@ static void target_dose_task(void *args)
         ESP_LOGI(group->tag, "Reading EC sensor data...");
         ba234_update_sensor_data();
 
-        ESP_LOGI(group->tag, "Current EC: %u, target EC: %u", (unsigned int)ba234_sensor_data.ec, (unsigned int)target_ec);
-        if (target_ec > ba234_sensor_data.ec) {
+        uint32_t current_ec = (uint32_t)(ba234_sensor_data.ec * settings_get_ec_cal_factor() + 0.5f);
+        ESP_LOGI(group->tag, "Current EC: %lu (raw %u), target EC: %u",
+                 (unsigned long)current_ec, (unsigned int)ba234_sensor_data.ec, (unsigned int)target_ec);
+        if (target_ec > current_ec) {
             // Dose the fertilizer if current concentration is less than target
             ESP_LOGI(group->tag, "Current EC is below target, dosing fertilizer...");
             for (size_t i = 0; i < group->head_count; i++) {
