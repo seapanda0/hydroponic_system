@@ -825,6 +825,16 @@ void ST7789(void *pvParameters)
     kinetic_os_set_shot_dose_setting(settings_get_shot_dose_ms());
     kinetic_os_set_mix_interval_setting(settings_get_mix_interval_ms());
 
+    // Paint the first full frame before lighting the backlight, so the panel's
+    // stale GRAM contents (or SPI init noise) are never visible to the user.
+    // The draw buffer only covers a 40-row strip, so several handler passes
+    // are needed to flush the whole 240-row screen at least once.
+    for (int i = 0; i < 10; i++) {
+        lv_timer_handler();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    lcdBacklightOn(&dev);
+
     bool wifi_name_shown = false;
 
     while(1) {
@@ -832,10 +842,20 @@ void ST7789(void *pvParameters)
             kinetic_os_set_wifi_name(WIFI_SSID);
             wifi_name_shown = true;
         }
-        kinetic_os_set_temperature(g_ui_temperature_c);
-        kinetic_os_set_humidity(g_ui_humidity_pct);
-        kinetic_os_set_water_level(g_ui_water_level_pct);
-        kinetic_os_set_distance(g_ui_distance_mm);
+        if (g_sht4x_ready) {
+            kinetic_os_set_temperature(g_ui_temperature_c);
+            kinetic_os_set_humidity(g_ui_humidity_pct);
+        } else {
+            kinetic_os_set_temperature_not_detected();
+            kinetic_os_set_humidity_not_detected();
+        }
+        if (g_dyp_ready) {
+            kinetic_os_set_water_level(g_ui_water_level_pct);
+            kinetic_os_set_distance(g_ui_distance_mm);
+        } else {
+            kinetic_os_set_water_level_not_detected();
+            kinetic_os_set_distance_not_detected();
+        }
         // Update chemistry metrics if BA234 sensor is available
         if (ba234_sensor_status == ESP_OK) {
             g_ui_tds_ppm  = ba234_sensor_data.tds;
@@ -845,6 +865,9 @@ void ST7789(void *pvParameters)
             g_ui_ec_us_cm = cal_ec;
             kinetic_os_set_tds(ba234_sensor_data.tds);
             kinetic_os_set_ec(cal_ec);
+        } else {
+            kinetic_os_set_tds_not_detected();
+            kinetic_os_set_ec_not_detected();
         }
         // Mirror routine states onto the routines page buttons
         kinetic_os_set_routine_state(KINETIC_ROUTINE_PRIME_A, s_dosing_heads[0].prime_active);

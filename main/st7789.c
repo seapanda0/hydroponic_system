@@ -190,8 +190,20 @@ void lcdInit(TFT_t * dev, int width, int height, int offsetx, int offsety)
 	spi_master_write_command(dev, 0x29);	//Display ON
 	delayMS(255);
 
+	// Backlight is left OFF here on purpose — the panel's GRAM holds garbage
+	// until the first LVGL frame is flushed. Caller turns the backlight on
+	// once the UI has actually been painted (see lcdBacklightOn()).
+}
+
+void lcdBacklightOn(TFT_t * dev) {
 	if(dev->_bl >= 0) {
 		gpio_set_level( dev->_bl, 1 );
+	}
+}
+
+void lcdBacklightOff(TFT_t * dev) {
+	if(dev->_bl >= 0) {
+		gpio_set_level( dev->_bl, 0 );
 	}
 }
 

@@ -383,6 +383,30 @@ void kinetic_os_set_ec(uint32_t us_per_cm) {
     }
 }
 
+void kinetic_os_set_temperature_not_detected(void) {
+    if(p1_temp_val) lv_label_set_text(p1_temp_val, "Not Detected");
+}
+
+void kinetic_os_set_humidity_not_detected(void) {
+    if(p1_humidity_val) lv_label_set_text(p1_humidity_val, "Not Detected");
+}
+
+void kinetic_os_set_water_level_not_detected(void) {
+    if(p1_water_level_val) lv_label_set_text(p1_water_level_val, "Not Detected");
+}
+
+void kinetic_os_set_distance_not_detected(void) {
+    if(p1_distance_val) lv_label_set_text(p1_distance_val, "Not Detected");
+}
+
+void kinetic_os_set_tds_not_detected(void) {
+    if(p1_tds_val) lv_label_set_text(p1_tds_val, "Not Detected");
+}
+
+void kinetic_os_set_ec_not_detected(void) {
+    if(p1_ec_val) lv_label_set_text(p1_ec_val, "Not Detected");
+}
+
 void kinetic_os_set_pump_switch_cb(kinetic_os_switch_cb_t cb) { user_pump_cb = cb; }
 
 void kinetic_os_set_light_switch_cb(kinetic_os_switch_cb_t cb) { user_light_cb = cb; }

@@ -23,5 +23,7 @@ bool spi_master_write_addr(TFT_t * dev, uint16_t addr1, uint16_t addr2);
 void delayMS(int ms);
 void lcdInit(TFT_t * dev, int width, int height, int offsetx, int offsety);
 void lcdInversionOff(TFT_t * dev);
+void lcdBacklightOn(TFT_t * dev);
+void lcdBacklightOff(TFT_t * dev);
 
 #endif /* MAIN_ST7789_H_ */

@@ -42,6 +42,14 @@ void kinetic_os_set_ec(uint32_t us_per_cm);
 // Ultrasonic distance (raw cm from sensor)
 void kinetic_os_set_distance(uint16_t cm);
 
+// Marks a sensor field as "Not Detected" when it failed to initialize at startup
+void kinetic_os_set_temperature_not_detected(void);
+void kinetic_os_set_humidity_not_detected(void);
+void kinetic_os_set_water_level_not_detected(void);
+void kinetic_os_set_distance_not_detected(void);
+void kinetic_os_set_tds_not_detected(void);
+void kinetic_os_set_ec_not_detected(void);
+
 // EC history chart: sample period and window size (3 minutes)
 #define KINETIC_EC_CHART_SAMPLE_PERIOD_MS 2000U
 #define KINETIC_EC_CHART_WINDOW_MS 180000U
