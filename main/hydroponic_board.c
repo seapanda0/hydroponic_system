@@ -29,6 +29,7 @@
 #include "web_server.h"  // WiFi + HTTP server module
 #include "settings_manager.h"  // NVS-backed dosing settings
 #include "hydro_mqtt.h"  // MQTT client (enable/disable via mqtt_config.h)
+#include "hydro_time.h"  // Virtual RTC + grow light schedule
 
 // Dosing head state. Each head has a dedicated pump GPIO and valve GPIO.
 // On V1 both point to the same pin (wired in parallel); on V2 they are separate.
@@ -148,6 +149,11 @@ static bool s_grow_light_on = false;
 static volatile bool s_dose_popup_pending = false;
 static volatile uint32_t s_dose_popup_ec = 0;
 static const char *s_dose_popup_tag = "";
+
+// Pending hour/minute shown on the system-time steppers before the user
+// taps "SET" to commit them via hydro_time_set_manual()
+static uint8_t s_pending_hour = 0;
+static uint8_t s_pending_minute = 0;
 static bool s_fert_a_on = false;
 static bool s_fert_b_on = false;
 static bool g_touch_ready = false;
@@ -443,6 +449,73 @@ static void ui_light_switch_cb(bool is_on)
 	grow_light_fade_to(is_on ? 100 : 0);
 	ESP_LOGI(TAG, "Grow light %s (fading)", is_on ? "ON" : "OFF");
     hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_LIGHT, is_on);
+}
+
+static void ui_time_adjust_cb(kinetic_time_field_t field, bool increase)
+{
+    int delta = increase ? 1 : -1;
+    switch (field) {
+        case KINETIC_TIME_FIELD_SYSTEM_HOUR:
+            s_pending_hour = (uint8_t)((s_pending_hour + 24 + delta) % 24);
+            break;
+        case KINETIC_TIME_FIELD_SYSTEM_MINUTE:
+            s_pending_minute = (uint8_t)((s_pending_minute + 60 + delta) % 60);
+            break;
+        case KINETIC_TIME_FIELD_ON_HOUR: {
+            uint8_t h, m;
+            hydro_time_get_on_time(&h, &m);
+            h = (uint8_t)((h + 24 + delta) % 24);
+            hydro_time_set_on_time(h, m);
+            break;
+        }
+        case KINETIC_TIME_FIELD_ON_MINUTE: {
+            uint8_t h, m;
+            hydro_time_get_on_time(&h, &m);
+            m = (uint8_t)((m + 60 + delta) % 60);
+            hydro_time_set_on_time(h, m);
+            break;
+        }
+        case KINETIC_TIME_FIELD_OFF_HOUR: {
+            uint8_t h, m;
+            hydro_time_get_off_time(&h, &m);
+            h = (uint8_t)((h + 24 + delta) % 24);
+            hydro_time_set_off_time(h, m);
+            break;
+        }
+        case KINETIC_TIME_FIELD_OFF_MINUTE: {
+            uint8_t h, m;
+            hydro_time_get_off_time(&h, &m);
+            m = (uint8_t)((m + 60 + delta) % 60);
+            hydro_time_set_off_time(h, m);
+            break;
+        }
+    }
+}
+
+static void ui_time_set_cb(void)
+{
+    hydro_time_set_manual(s_pending_hour, s_pending_minute);
+    ESP_LOGI(TAG, "System time manually set to %02u:%02u", s_pending_hour, s_pending_minute);
+}
+
+// NTP sync blocks on network I/O, so it runs on its own short-lived task and
+// never on the display task (which must stay free to run LVGL).
+static void ntp_sync_task(void *arg)
+{
+    (void)arg;
+    hydro_time_sync_ntp();
+    vTaskDelete(NULL);
+}
+
+static void ui_time_ntp_sync_cb(void)
+{
+    xTaskCreate(ntp_sync_task, "ntp_sync", 4096, NULL, 4, NULL);
+}
+
+static void ui_light_timer_enable_cb(bool enabled)
+{
+    hydro_time_set_timer_enabled(enabled);
+    ESP_LOGI(TAG, "Grow light timer %s", enabled ? "ENABLED" : "DISABLED");
 }
 
 static void ui_fert_a_switch_cb(bool is_on)
@@ -866,6 +939,10 @@ void ST7789(void *pvParameters)
     kinetic_os_set_cal_start_cb(ui_cal_start_cb);
     kinetic_os_set_cal_clear_cb(ui_cal_clear_cb);
     kinetic_os_set_cal_ignore_temp_cb(ui_cal_ignore_temp_cb);
+    kinetic_os_set_time_adjust_cb(ui_time_adjust_cb);
+    kinetic_os_set_time_set_cb(ui_time_set_cb);
+    kinetic_os_set_time_ntp_sync_cb(ui_time_ntp_sync_cb);
+    kinetic_os_set_light_timer_enable_cb(ui_light_timer_enable_cb);
 
     kinetic_os_ui_init();
 
@@ -879,6 +956,18 @@ void ST7789(void *pvParameters)
     kinetic_os_set_shot_dose_setting(settings_get_shot_dose_ms());
     kinetic_os_set_mix_interval_setting(settings_get_mix_interval_ms());
 
+    // Seed the system-time steppers with whatever time we currently have
+    // (survived-reboot value, or 00:00 on a cold boot)
+    hydro_time_get_current(&s_pending_hour, &s_pending_minute, NULL);
+    {
+        uint8_t on_h, on_m, off_h, off_m;
+        hydro_time_get_on_time(&on_h, &on_m);
+        hydro_time_get_off_time(&off_h, &off_m);
+        kinetic_os_set_light_on_time(on_h, on_m);
+        kinetic_os_set_light_off_time(off_h, off_m);
+        kinetic_os_set_light_timer_enabled(hydro_time_get_timer_enabled());
+    }
+
     // Paint the first full frame before lighting the backlight, so the panel's
     // stale GRAM contents (or SPI init noise) are never visible to the user.
     // The draw buffer only covers a 40-row strip, so several handler passes
@@ -889,13 +978,8 @@ void ST7789(void *pvParameters)
     }
     lcdBacklightOn(&dev);
 
-    bool wifi_name_shown = false;
-
     while(1) {
-        if (wifi_is_connected() && !wifi_name_shown) {
-            kinetic_os_set_wifi_name(WIFI_SSID);
-            wifi_name_shown = true;
-        }
+        kinetic_os_set_wifi_name(wifi_is_connected() ? WIFI_SSID : NULL);
         if (g_sht4x_ready) {
             kinetic_os_set_temperature(g_ui_temperature_c);
             kinetic_os_set_humidity(g_ui_humidity_pct);
@@ -934,6 +1018,58 @@ void ST7789(void *pvParameters)
         if (s_dose_popup_pending) {
             s_dose_popup_pending = false;
             kinetic_os_show_dose_complete_popup(s_dose_popup_tag, s_dose_popup_ec);
+        }
+
+        // Feed the clock & grow light timer page
+        {
+            uint8_t hh, mm, ss;
+            hydro_time_get_current(&hh, &mm, &ss);
+            kinetic_os_set_clock_display(hh, mm, ss, hydro_time_is_set());
+            kinetic_os_set_time_edit_fields(s_pending_hour, s_pending_minute);
+
+            const char *status_text;
+            switch (hydro_time_get_sync_status()) {
+                case HYDRO_TIME_SYNC_IN_PROGRESS:  status_text = "Syncing...";            break;
+                case HYDRO_TIME_SYNC_FAIL_NO_WIFI: status_text = "NTP Failed: No WiFi";   break;
+                case HYDRO_TIME_SYNC_FAIL_TIMEOUT: status_text = "NTP Failed: Timeout";   break;
+                default:
+                    switch (hydro_time_get_source()) {
+                        case HYDRO_TIME_SOURCE_NTP:    status_text = "NTP Synced"; break;
+                        case HYDRO_TIME_SOURCE_MANUAL: status_text = "Manual";     break;
+                        default:                        status_text = "Not Set";   break;
+                    }
+                    break;
+            }
+            kinetic_os_set_time_sync_status(status_text);
+
+            uint8_t on_h, on_m, off_h, off_m;
+            hydro_time_get_on_time(&on_h, &on_m);
+            hydro_time_get_off_time(&off_h, &off_m);
+            kinetic_os_set_light_on_time(on_h, on_m);
+            kinetic_os_set_light_off_time(off_h, off_m);
+            kinetic_os_set_light_timer_enabled(hydro_time_get_timer_enabled());
+
+            // Apply the grow light schedule here (display task) since
+            // kinetic_os_set_light_state() must only be called from this task.
+            if (hydro_time_get_timer_enabled() && hydro_time_is_set()) {
+                bool desired = hydro_time_light_should_be_on();
+                if (desired != s_grow_light_on) {
+                    s_grow_light_on = desired;
+                    grow_light_fade_to(desired ? 100 : 0);
+                    kinetic_os_set_light_state(desired);
+                    ESP_LOGI(TAG, "Grow light timer: auto %s", desired ? "ON" : "OFF");
+                    hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_LIGHT, desired);
+                }
+            }
+
+            if (!hydro_time_get_timer_enabled()) {
+                kinetic_os_set_light_schedule_status("Idle", false);
+            } else if (!hydro_time_is_set()) {
+                kinetic_os_set_light_schedule_status("Waiting for time", false);
+            } else {
+                bool on_now = hydro_time_light_should_be_on();
+                kinetic_os_set_light_schedule_status(on_now ? "ON now" : "OFF now", on_now);
+            }
         }
         // Feed calibration page
         {
@@ -1510,6 +1646,10 @@ void ba234_read_task(void * arg){
 
 void app_main(void)
 {
+    // Restores the RTC-slow-memory time reference (if it survived a warm
+    // reboot) before anything else touches the clock or the grow light timer
+    hydro_time_init();
+
     // Load persisted dosing settings before anything uses them
     settings_manager_init();
     for (size_t i = 0; i < DOSE_GROUP_COUNT; i++) {
@@ -1536,5 +1676,5 @@ void app_main(void)
 	
     xTaskCreate(ba234_read_task, "ba234_read_task", 1024*6, NULL, 2, NULL);
 
-	xTaskCreate(ST7789, "ST7789", 1024*6, NULL, 2, NULL);
+	xTaskCreate(ST7789, "ST7789", 1024*8, NULL, 2, NULL);
 }

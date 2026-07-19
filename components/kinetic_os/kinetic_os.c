@@ -8,13 +8,15 @@ static lv_obj_t * page4;
 static lv_obj_t * page5; // Dosing routines
 static lv_obj_t * page6; // EC history chart
 static lv_obj_t * page7; // Dosing settings
+static lv_obj_t * page8; // Clock & light timer
 static lv_obj_t * btn_nav1;
 static lv_obj_t * btn_nav2;
 static lv_obj_t * btn_nav3;
 static lv_obj_t * btn_nav4;
 static lv_obj_t * btn_nav5;
 static lv_obj_t * btn_nav6;
-#define NAV_BTN_COUNT 6
+static lv_obj_t * btn_nav7;
+#define NAV_BTN_COUNT 7
 
 // Page 5 Dynamic Elements (routine buttons)
 static lv_obj_t * p5_routine_btns[KINETIC_ROUTINE_COUNT];
@@ -33,6 +35,21 @@ static lv_obj_t * p7_mix_value_label;
 static kinetic_os_setting_cb_t user_shot_dose_setting_cb = NULL;
 static kinetic_os_setting_cb_t user_mix_interval_setting_cb = NULL;
 
+// Page 8 Dynamic Elements (clock & grow light timer)
+static lv_obj_t * p8_sync_status_label;
+static lv_obj_t * p8_sys_hour_label;
+static lv_obj_t * p8_sys_minute_label;
+static lv_obj_t * p8_timer_enable_sw;
+static lv_obj_t * p8_on_hour_label;
+static lv_obj_t * p8_on_minute_label;
+static lv_obj_t * p8_off_hour_label;
+static lv_obj_t * p8_off_minute_label;
+static lv_obj_t * p8_schedule_status_label;
+static kinetic_os_time_adjust_cb_t user_time_adjust_cb = NULL;
+static kinetic_os_time_set_cb_t user_time_set_cb = NULL;
+static kinetic_os_time_ntp_sync_cb_t user_time_ntp_sync_cb = NULL;
+static kinetic_os_light_timer_enable_cb_t user_light_timer_enable_cb = NULL;
+
 // Page 6 Dynamic Elements (EC chart)
 static lv_obj_t * p6_chart;
 static lv_chart_series_t * p6_ec_series;
@@ -44,6 +61,7 @@ static uint32_t s_last_ec = 0;
 static bool s_ec_seen = false;
 
 static lv_obj_t * p_top_title;
+static lv_obj_t * p_top_clock;
 static kinetic_os_switch_cb_t user_pump_cb = NULL;
 static kinetic_os_switch_cb_t user_light_cb = NULL;
 
@@ -89,6 +107,11 @@ static kinetic_os_cal_ignore_temp_cb_t s_cal_ignore_temp_cb = NULL;
 
 // Fonts
 #define FONT_BASE &lv_font_montserrat_14
+#if LV_FONT_MONTSERRAT_20
+#define FONT_TIME_BIG &lv_font_montserrat_20
+#else
+#define FONT_TIME_BIG FONT_BASE
+#endif
 
 // Icons mapped to LVGL built-in symbols
 #define ICON_SENSORS LV_SYMBOL_WIFI
@@ -106,6 +129,7 @@ static void build_page4(void);
 static void build_page5(void);
 static void build_page6(void);
 static void build_page7(void);
+static void build_page8(void);
 static void bottom_nav_event_cb(lv_event_t * e);
 static void tileview_scroll_event_cb(lv_event_t * e);
 static void update_bottom_nav_styles(uint8_t active_idx);
@@ -129,6 +153,7 @@ void kinetic_os_ui_init(void) {
     page5 = lv_tileview_add_tile(root_tv, 3, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
     page6 = lv_tileview_add_tile(root_tv, 4, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
     page7 = lv_tileview_add_tile(root_tv, 5, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    page8 = lv_tileview_add_tile(root_tv, 6, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
 
     build_page1();
     build_page2();
@@ -136,6 +161,7 @@ void kinetic_os_ui_init(void) {
     build_page5();
     build_page6();
     build_page7();
+    build_page8();
 
     build_top_bar();
     build_bottom_bar();
@@ -161,10 +187,16 @@ static void build_top_bar(void) {
     lv_obj_set_style_line_color(line, lv_color_hex(0x1e201d), 0);
 
     p_top_title = lv_label_create(top);
-    lv_label_set_text(p_top_title, ICON_SENSORS " smarthome_5G");
+    lv_label_set_text(p_top_title, ICON_SENSORS " Not Connected");
     lv_obj_set_style_text_color(p_top_title, KINETIC_COLOR_PRIMARY, 0);
     lv_obj_set_style_text_font(p_top_title, FONT_BASE, 0);
     lv_obj_align(p_top_title, LV_ALIGN_LEFT_MID, 0, 0);
+
+    p_top_clock = lv_label_create(top);
+    lv_label_set_text(p_top_clock, "--:--");
+    lv_obj_set_style_text_color(p_top_clock, KINETIC_COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(p_top_clock, FONT_BASE, 0);
+    lv_obj_align(p_top_clock, LV_ALIGN_RIGHT_MID, 0, 0);
 }
 
 static void build_bottom_bar(void) {
@@ -236,10 +268,18 @@ static void build_bottom_bar(void) {
     lv_obj_t * l6 = lv_label_create(btn_nav6);
     lv_label_set_text(l6, LV_SYMBOL_EDIT); // "Dosing Settings"
     lv_obj_center(l6);
+
+    btn_nav7 = lv_btn_create(flex);
+    lv_obj_set_size(btn_nav7, 48, 38);
+    lv_obj_set_style_radius(btn_nav7, 8, 0);
+    lv_obj_add_event_cb(btn_nav7, bottom_nav_event_cb, LV_EVENT_CLICKED, (void*)6);
+    lv_obj_t * l7 = lv_label_create(btn_nav7);
+    lv_label_set_text(l7, LV_SYMBOL_BELL); // "Clock & Light Timer"
+    lv_obj_center(l7);
 }
 
 static void update_bottom_nav_styles(uint8_t active_idx) {
-    lv_obj_t * btns[NAV_BTN_COUNT] = {btn_nav1, btn_nav2, btn_nav3, btn_nav4, btn_nav5, btn_nav6};
+    lv_obj_t * btns[NAV_BTN_COUNT] = {btn_nav1, btn_nav2, btn_nav3, btn_nav4, btn_nav5, btn_nav6, btn_nav7};
     for(int i = 0; i < NAV_BTN_COUNT; i++) {
         if(i == active_idx) {
             lv_obj_set_style_bg_color(btns[i], KINETIC_COLOR_PRIMARY, 0);
@@ -266,6 +306,7 @@ static void tileview_scroll_event_cb(lv_event_t * e) {
     else if(active == page5) update_bottom_nav_styles(3);
     else if(active == page6) update_bottom_nav_styles(4);
     else if(active == page7) update_bottom_nav_styles(5);
+    else if(active == page8) update_bottom_nav_styles(6);
 }
 
 
@@ -340,9 +381,11 @@ void kinetic_os_set_fertilizer_b_state(bool on) {
 void kinetic_os_set_wifi_name(const char * ssid) {
     if(!p_top_title) return;
     if(ssid == NULL || strlen(ssid) == 0) {
-        lv_label_set_text(p_top_title, ICON_SENSORS " smarthome_5G");
+        lv_label_set_text(p_top_title, ICON_SENSORS " Not Connected");
+        lv_obj_set_style_text_color(p_top_title, KINETIC_COLOR_TEXT_DIM, 0);
     } else {
         lv_label_set_text_fmt(p_top_title, ICON_SENSORS " %s", ssid);
+        lv_obj_set_style_text_color(p_top_title, KINETIC_COLOR_PRIMARY, 0);
     }
 }
 
@@ -1242,6 +1285,275 @@ static void build_page7(void) {
 
     kinetic_os_set_shot_dose_setting(KINETIC_SHOT_DOSE_MIN_MS);
     kinetic_os_set_mix_interval_setting(KINETIC_MIX_INTERVAL_MIN_MS);
+}
+
+// --- Page 8: Clock & Grow Light Timer ---
+
+void kinetic_os_set_time_adjust_cb(kinetic_os_time_adjust_cb_t cb) { user_time_adjust_cb = cb; }
+void kinetic_os_set_time_set_cb(kinetic_os_time_set_cb_t cb) { user_time_set_cb = cb; }
+void kinetic_os_set_time_ntp_sync_cb(kinetic_os_time_ntp_sync_cb_t cb) { user_time_ntp_sync_cb = cb; }
+void kinetic_os_set_light_timer_enable_cb(kinetic_os_light_timer_enable_cb_t cb) { user_light_timer_enable_cb = cb; }
+
+static void time_stepper_btn_event_cb(lv_event_t * e) {
+    uintptr_t packed = (uintptr_t)lv_event_get_user_data(e);
+    kinetic_time_field_t field = (kinetic_time_field_t)(packed >> 1);
+    bool increase = (packed & 1U) != 0U;
+    if(user_time_adjust_cb) user_time_adjust_cb(field, increase);
+}
+
+static void time_set_btn_event_cb(lv_event_t * e) {
+    (void)e;
+    if(user_time_set_cb) user_time_set_cb();
+}
+
+static void time_ntp_btn_event_cb(lv_event_t * e) {
+    (void)e;
+    if(user_time_ntp_sync_cb) user_time_ntp_sync_cb();
+}
+
+static void timer_enable_sw_event_cb(lv_event_t * e) {
+    bool enabled = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    if(user_light_timer_enable_cb) user_light_timer_enable_cb(enabled);
+}
+
+// Small square +/- button bound to one HH:MM field
+static lv_obj_t * create_time_stepper_btn(lv_obj_t * parent, const char * symbol,
+                                          kinetic_time_field_t field, bool increase,
+                                          lv_coord_t x, lv_coord_t y, lv_coord_t size) {
+    lv_obj_t * btn = lv_btn_create(parent);
+    lv_obj_set_size(btn, size, size);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_style_bg_color(btn, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_color(btn, KINETIC_COLOR_OUTLINE, 0);
+    lv_obj_set_style_border_opa(btn, LV_OPA_50, 0);
+    lv_obj_set_style_radius(btn, 6, 0);
+    lv_obj_set_style_pad_all(btn, 0, 0);
+    uintptr_t packed = ((uintptr_t)field << 1) | (increase ? 1U : 0U);
+    lv_obj_add_event_cb(btn, time_stepper_btn_event_cb, LV_EVENT_CLICKED, (void*)packed);
+
+    lv_obj_t * label = lv_label_create(btn);
+    lv_label_set_text(label, symbol);
+    lv_obj_set_style_text_color(label, KINETIC_COLOR_TEXT_DIM, 0);
+    lv_obj_center(label);
+    return btn;
+}
+
+static lv_obj_t * create_time_value_label(lv_obj_t * parent, lv_coord_t x, lv_coord_t y,
+                                          lv_coord_t w, lv_coord_t h, const lv_font_t * font) {
+    lv_obj_t * label = lv_label_create(parent);
+    lv_label_set_text(label, "00");
+    lv_obj_set_size(label, w, h);
+    lv_obj_set_pos(label, x, y);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(label, KINETIC_COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(label, font, 0);
+    return label;
+}
+
+static void build_page8(void) {
+    // Content is taller than the 170px tile, so let it scroll vertically
+    // instead of cramming everything down to unreadable sizes.
+    lv_obj_set_scroll_dir(page8, LV_DIR_VER);
+
+    // --- System time card ---
+    // The live clock now lives in the top bar next to the WiFi status, so
+    // this card only needs to hold the pending-time steppers + action
+    // buttons. Splitting steppers and buttons onto separate rows (instead of
+    // cramming both into one row) gives every element real breathing room.
+    lv_obj_t * clock_card = lv_obj_create(page8);
+    lv_obj_set_size(clock_card, 310, 114);
+    lv_obj_set_pos(clock_card, 5, 3);
+    lv_obj_set_style_bg_color(clock_card, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_width(clock_card, 1, 0);
+    lv_obj_set_style_border_color(clock_card, KINETIC_COLOR_OUTLINE, 0);
+    lv_obj_set_style_border_opa(clock_card, LV_OPA_30, 0);
+    lv_obj_set_style_radius(clock_card, 8, 0);
+    lv_obj_set_style_pad_all(clock_card, 6, 0);
+    lv_obj_clear_flag(clock_card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * clock_title = lv_label_create(clock_card);
+    lv_label_set_text(clock_title, "SYSTEM TIME");
+    lv_obj_set_style_text_color(clock_title, KINETIC_COLOR_TEXT_DIM, 0);
+#if LV_FONT_MONTSERRAT_12
+    lv_obj_set_style_text_font(clock_title, &lv_font_montserrat_12, 0);
+#endif
+    lv_obj_set_pos(clock_title, 0, 0);
+
+    p8_sync_status_label = lv_label_create(clock_card);
+    lv_label_set_text(p8_sync_status_label, "Not Set");
+    lv_obj_set_style_text_color(p8_sync_status_label, KINETIC_COLOR_SECONDARY, 0);
+#if LV_FONT_MONTSERRAT_12
+    lv_obj_set_style_text_font(p8_sync_status_label, &lv_font_montserrat_12, 0);
+#endif
+    lv_obj_align(p8_sync_status_label, LV_ALIGN_TOP_RIGHT, 0, 0);
+
+    // Row A: [H-] HH [H+]  :  [M-] MM [M+] -- generously sized, nothing else
+    // sharing this row
+    lv_coord_t sy = 20;
+    create_time_stepper_btn(clock_card, LV_SYMBOL_MINUS, KINETIC_TIME_FIELD_SYSTEM_HOUR, false, 0, sy, 40);
+    p8_sys_hour_label = create_time_value_label(clock_card, 44, sy, 48, 40, FONT_TIME_BIG);
+    create_time_stepper_btn(clock_card, LV_SYMBOL_PLUS, KINETIC_TIME_FIELD_SYSTEM_HOUR, true, 96, sy, 40);
+
+    lv_obj_t * colon = lv_label_create(clock_card);
+    lv_label_set_text(colon, ":");
+    lv_obj_set_style_text_color(colon, KINETIC_COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(colon, FONT_TIME_BIG, 0);
+    lv_obj_set_pos(colon, 140, sy + 8);
+
+    create_time_stepper_btn(clock_card, LV_SYMBOL_MINUS, KINETIC_TIME_FIELD_SYSTEM_MINUTE, false, 156, sy, 40);
+    p8_sys_minute_label = create_time_value_label(clock_card, 200, sy, 48, 40, FONT_TIME_BIG);
+    create_time_stepper_btn(clock_card, LV_SYMBOL_PLUS, KINETIC_TIME_FIELD_SYSTEM_MINUTE, true, 252, sy, 40);
+
+    // Row B: two wide, clearly separated action buttons
+    lv_coord_t by = 66;
+    lv_obj_t * set_btn = lv_btn_create(clock_card);
+    lv_obj_set_size(set_btn, 144, 34);
+    lv_obj_set_pos(set_btn, 0, by);
+    lv_obj_set_style_bg_color(set_btn, KINETIC_COLOR_PRIMARY, 0);
+    lv_obj_add_event_cb(set_btn, time_set_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * set_lbl = lv_label_create(set_btn);
+    lv_label_set_text(set_lbl, "SET TIME");
+    lv_obj_set_style_text_color(set_lbl, KINETIC_COLOR_ON_PRIMARY, 0);
+    lv_obj_center(set_lbl);
+
+    lv_obj_t * ntp_btn = lv_btn_create(clock_card);
+    lv_obj_set_size(ntp_btn, 154, 34);
+    lv_obj_set_pos(ntp_btn, 154, by);
+    lv_obj_set_style_bg_color(ntp_btn, KINETIC_COLOR_SURFACE_VARIANT, 0);
+    lv_obj_set_style_border_width(ntp_btn, 1, 0);
+    lv_obj_set_style_border_color(ntp_btn, KINETIC_COLOR_TERTIARY, 0);
+    lv_obj_add_event_cb(ntp_btn, time_ntp_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * ntp_lbl = lv_label_create(ntp_btn);
+    lv_label_set_text(ntp_lbl, LV_SYMBOL_WIFI " NETWORK TIME");
+    lv_obj_set_style_text_color(ntp_lbl, KINETIC_COLOR_TERTIARY, 0);
+#if LV_FONT_MONTSERRAT_12
+    lv_obj_set_style_text_font(ntp_lbl, &lv_font_montserrat_12, 0);
+#endif
+    lv_obj_center(ntp_lbl);
+
+    // --- Grow light timer card ---
+    lv_obj_t * timer_card = lv_obj_create(page8);
+    lv_obj_set_size(timer_card, 310, 96);
+    lv_obj_set_pos(timer_card, 5, 120);
+    lv_obj_set_style_bg_color(timer_card, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_width(timer_card, 1, 0);
+    lv_obj_set_style_border_color(timer_card, KINETIC_COLOR_OUTLINE, 0);
+    lv_obj_set_style_border_opa(timer_card, LV_OPA_30, 0);
+    lv_obj_set_style_radius(timer_card, 8, 0);
+    lv_obj_set_style_pad_all(timer_card, 6, 0);
+    lv_obj_clear_flag(timer_card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * timer_title = lv_label_create(timer_card);
+    lv_label_set_text(timer_title, "GROW LIGHT TIMER");
+    lv_obj_set_style_text_color(timer_title, KINETIC_COLOR_TEXT_DIM, 0);
+#if LV_FONT_MONTSERRAT_12
+    lv_obj_set_style_text_font(timer_title, &lv_font_montserrat_12, 0);
+#endif
+    lv_obj_set_pos(timer_title, 0, 0);
+
+    // Top-right corner: enable switch + live "would be on/off now" readout,
+    // so that space isn't left empty
+    p8_timer_enable_sw = lv_switch_create(timer_card);
+    lv_obj_set_style_bg_color(p8_timer_enable_sw, KINETIC_COLOR_PRIMARY, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_add_event_cb(p8_timer_enable_sw, timer_enable_sw_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_align(p8_timer_enable_sw, LV_ALIGN_TOP_RIGHT, 0, -4);
+
+    p8_schedule_status_label = lv_label_create(timer_card);
+    lv_label_set_text(p8_schedule_status_label, "Idle");
+    lv_obj_set_style_text_color(p8_schedule_status_label, KINETIC_COLOR_TEXT_DIM, 0);
+#if LV_FONT_MONTSERRAT_12
+    lv_obj_set_style_text_font(p8_schedule_status_label, &lv_font_montserrat_12, 0);
+#endif
+    lv_obj_align(p8_schedule_status_label, LV_ALIGN_TOP_RIGHT, 0, 24);
+
+    // ON row
+    lv_coord_t on_y = 28;
+    lv_obj_t * on_lbl = lv_label_create(timer_card);
+    lv_label_set_text(on_lbl, "ON");
+    lv_obj_set_style_text_color(on_lbl, KINETIC_COLOR_PRIMARY, 0);
+#if LV_FONT_MONTSERRAT_12
+    lv_obj_set_style_text_font(on_lbl, &lv_font_montserrat_12, 0);
+#endif
+    lv_obj_set_pos(on_lbl, 0, on_y + 8);
+
+    create_time_stepper_btn(timer_card, LV_SYMBOL_MINUS, KINETIC_TIME_FIELD_ON_HOUR, false, 26, on_y, 30);
+    p8_on_hour_label = create_time_value_label(timer_card, 58, on_y, 34, 30, FONT_BASE);
+    create_time_stepper_btn(timer_card, LV_SYMBOL_PLUS, KINETIC_TIME_FIELD_ON_HOUR, true, 94, on_y, 30);
+    lv_obj_t * on_colon = lv_label_create(timer_card);
+    lv_label_set_text(on_colon, ":");
+    lv_obj_set_pos(on_colon, 128, on_y + 6);
+    create_time_stepper_btn(timer_card, LV_SYMBOL_MINUS, KINETIC_TIME_FIELD_ON_MINUTE, false, 138, on_y, 30);
+    p8_on_minute_label = create_time_value_label(timer_card, 170, on_y, 34, 30, FONT_BASE);
+    create_time_stepper_btn(timer_card, LV_SYMBOL_PLUS, KINETIC_TIME_FIELD_ON_MINUTE, true, 206, on_y, 30);
+
+    // OFF row
+    lv_coord_t off_y = 62;
+    lv_obj_t * off_lbl = lv_label_create(timer_card);
+    lv_label_set_text(off_lbl, "OFF");
+    lv_obj_set_style_text_color(off_lbl, lv_color_hex(0xff5a5a), 0);
+#if LV_FONT_MONTSERRAT_12
+    lv_obj_set_style_text_font(off_lbl, &lv_font_montserrat_12, 0);
+#endif
+    lv_obj_set_pos(off_lbl, 0, off_y + 8);
+
+    create_time_stepper_btn(timer_card, LV_SYMBOL_MINUS, KINETIC_TIME_FIELD_OFF_HOUR, false, 26, off_y, 30);
+    p8_off_hour_label = create_time_value_label(timer_card, 58, off_y, 34, 30, FONT_BASE);
+    create_time_stepper_btn(timer_card, LV_SYMBOL_PLUS, KINETIC_TIME_FIELD_OFF_HOUR, true, 94, off_y, 30);
+    lv_obj_t * off_colon = lv_label_create(timer_card);
+    lv_label_set_text(off_colon, ":");
+    lv_obj_set_pos(off_colon, 128, off_y + 6);
+    create_time_stepper_btn(timer_card, LV_SYMBOL_MINUS, KINETIC_TIME_FIELD_OFF_MINUTE, false, 138, off_y, 30);
+    p8_off_minute_label = create_time_value_label(timer_card, 170, off_y, 34, 30, FONT_BASE);
+    create_time_stepper_btn(timer_card, LV_SYMBOL_PLUS, KINETIC_TIME_FIELD_OFF_MINUTE, true, 206, off_y, 30);
+}
+
+// Lives in the top bar, next to the WiFi status, rather than on page8 --
+// keeps the clock visible from any page and frees up room on the timer page.
+void kinetic_os_set_clock_display(uint8_t hour, uint8_t minute, uint8_t second, bool time_valid) {
+    (void)second; // top bar shows HH:MM only -- keeps it compact next to the WiFi label
+    if(!p_top_clock) return;
+    if(time_valid) {
+        lv_label_set_text_fmt(p_top_clock, "%02u:%02u", (unsigned)hour, (unsigned)minute);
+    } else {
+        lv_label_set_text(p_top_clock, "--:--");
+    }
+}
+
+void kinetic_os_set_time_edit_fields(uint8_t pending_hour, uint8_t pending_minute) {
+    if(p8_sys_hour_label) lv_label_set_text_fmt(p8_sys_hour_label, "%02u", (unsigned)pending_hour);
+    if(p8_sys_minute_label) lv_label_set_text_fmt(p8_sys_minute_label, "%02u", (unsigned)pending_minute);
+}
+
+void kinetic_os_set_time_sync_status(const char * status_text) {
+    if(!p8_sync_status_label || !status_text) return;
+    lv_label_set_text(p8_sync_status_label, status_text);
+}
+
+void kinetic_os_set_light_on_time(uint8_t hour, uint8_t minute) {
+    if(p8_on_hour_label) lv_label_set_text_fmt(p8_on_hour_label, "%02u", (unsigned)hour);
+    if(p8_on_minute_label) lv_label_set_text_fmt(p8_on_minute_label, "%02u", (unsigned)minute);
+}
+
+void kinetic_os_set_light_off_time(uint8_t hour, uint8_t minute) {
+    if(p8_off_hour_label) lv_label_set_text_fmt(p8_off_hour_label, "%02u", (unsigned)hour);
+    if(p8_off_minute_label) lv_label_set_text_fmt(p8_off_minute_label, "%02u", (unsigned)minute);
+}
+
+void kinetic_os_set_light_timer_enabled(bool enabled) {
+    if(!p8_timer_enable_sw) return;
+    if(enabled) {
+        lv_obj_add_state(p8_timer_enable_sw, LV_STATE_CHECKED);
+    } else {
+        lv_obj_clear_state(p8_timer_enable_sw, LV_STATE_CHECKED);
+    }
+}
+
+void kinetic_os_set_light_schedule_status(const char * status_text, bool light_on_now) {
+    if(!p8_schedule_status_label || !status_text) return;
+    lv_label_set_text(p8_schedule_status_label, status_text);
+    lv_obj_set_style_text_color(p8_schedule_status_label,
+                                light_on_now ? KINETIC_COLOR_PRIMARY : KINETIC_COLOR_TEXT_DIM, 0);
 }
 
 // --- Page 2: EC Calibration API ---

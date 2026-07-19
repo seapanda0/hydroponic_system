@@ -120,6 +120,51 @@ void kinetic_os_update_cal(const kinetic_cal_update_t *d);
 // Overlays whichever page is currently visible; dismissed by the user
 // tapping OK. Call only from the display task (LVGL is not thread-safe).
 void kinetic_os_show_dose_complete_popup(const char *routine_label, uint32_t ec_us_cm);
+
+// --- Clock & Light Timer page ---
+
+// Identifies which HH:MM field a stepper +/- button belongs to.
+typedef enum {
+    KINETIC_TIME_FIELD_SYSTEM_HOUR,
+    KINETIC_TIME_FIELD_SYSTEM_MINUTE,
+    KINETIC_TIME_FIELD_ON_HOUR,
+    KINETIC_TIME_FIELD_ON_MINUTE,
+    KINETIC_TIME_FIELD_OFF_HOUR,
+    KINETIC_TIME_FIELD_OFF_MINUTE,
+} kinetic_time_field_t;
+
+// Fired when a +/- stepper button is tapped
+typedef void (*kinetic_os_time_adjust_cb_t)(kinetic_time_field_t field, bool increase);
+void kinetic_os_set_time_adjust_cb(kinetic_os_time_adjust_cb_t cb);
+
+// Fired by the "SET TIME" button - commits the pending manual hour/minute
+typedef void (*kinetic_os_time_set_cb_t)(void);
+void kinetic_os_set_time_set_cb(kinetic_os_time_set_cb_t cb);
+
+// Fired by the "USE NETWORK TIME" button
+typedef void (*kinetic_os_time_ntp_sync_cb_t)(void);
+void kinetic_os_set_time_ntp_sync_cb(kinetic_os_time_ntp_sync_cb_t cb);
+
+// Fired by the grow-light timer enable switch
+typedef void (*kinetic_os_light_timer_enable_cb_t)(bool enabled);
+void kinetic_os_set_light_timer_enable_cb(kinetic_os_light_timer_enable_cb_t cb);
+
+// Live clock readout (called every display tick)
+void kinetic_os_set_clock_display(uint8_t hour, uint8_t minute, uint8_t second, bool time_valid);
+// Pending hour/minute being adjusted by the SYSTEM_HOUR/MINUTE steppers,
+// not yet committed by the "SET TIME" button
+void kinetic_os_set_time_edit_fields(uint8_t pending_hour, uint8_t pending_minute);
+// Human-readable sync status, e.g. "Manual", "NTP Synced", "Syncing...",
+// "NTP Failed - No WiFi", "Not Set"
+void kinetic_os_set_time_sync_status(const char *status_text);
+
+void kinetic_os_set_light_on_time(uint8_t hour, uint8_t minute);
+void kinetic_os_set_light_off_time(uint8_t hour, uint8_t minute);
+void kinetic_os_set_light_timer_enabled(bool enabled);
+// Live "would the schedule have the light on right now" indicator, shown
+// next to the enable switch. Pass a NULL-terminated status string, e.g.
+// "ON now", "OFF now", or "Idle" when the timer is disabled/time not set.
+void kinetic_os_set_light_schedule_status(const char *status_text, bool light_on_now);
 typedef void (*kinetic_os_cal_start_cb_t)(void);
 typedef void (*kinetic_os_cal_clear_cb_t)(void);
 typedef void (*kinetic_os_cal_ignore_temp_cb_t)(void);
