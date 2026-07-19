@@ -95,6 +95,9 @@ static kinetic_os_cal_ignore_temp_cb_t s_cal_ignore_temp_cb = NULL;
 #define ICON_DASHBOARD LV_SYMBOL_LIST
 #define ICON_OPACITY LV_SYMBOL_TINT
 
+// Dose-complete popup (single instance; a new call replaces any open one)
+static lv_obj_t * s_dose_popup_backdrop = NULL;
+
 static void build_top_bar(void);
 static void build_bottom_bar(void);
 static void build_page1(void);
@@ -405,6 +408,76 @@ void kinetic_os_set_tds_not_detected(void) {
 
 void kinetic_os_set_ec_not_detected(void) {
     if(p1_ec_val) lv_label_set_text(p1_ec_val, "Not Detected");
+}
+
+static void dose_popup_ok_event_cb(lv_event_t * e) {
+    lv_obj_t * backdrop = (lv_obj_t *)lv_event_get_user_data(e);
+    lv_obj_del(backdrop);
+    if (s_dose_popup_backdrop == backdrop) {
+        s_dose_popup_backdrop = NULL;
+    }
+}
+
+void kinetic_os_show_dose_complete_popup(const char *routine_label, uint32_t ec_us_cm) {
+    // A new completion replaces whatever popup is currently on screen
+    if (s_dose_popup_backdrop) {
+        lv_obj_del(s_dose_popup_backdrop);
+        s_dose_popup_backdrop = NULL;
+    }
+
+    lv_obj_t * backdrop = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(backdrop);
+    lv_obj_set_size(backdrop, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(backdrop, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(backdrop, LV_OPA_70, 0);
+    lv_obj_clear_flag(backdrop, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(backdrop, LV_OBJ_FLAG_CLICKABLE); // eat touches to whatever's behind it
+
+    lv_obj_t * card = lv_obj_create(backdrop);
+    lv_obj_set_size(card, 240, 180);
+    lv_obj_center(card);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(card, KINETIC_COLOR_SURFACE, 0);
+    lv_obj_set_style_border_color(card, KINETIC_COLOR_PRIMARY, 0);
+    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_radius(card, 12, 0);
+
+    // Checkmark badge
+    lv_obj_t * badge = lv_obj_create(card);
+    lv_obj_set_size(badge, 48, 48);
+    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(badge, KINETIC_COLOR_PRIMARY, 0);
+    lv_obj_set_style_border_width(badge, 0, 0);
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(badge, LV_ALIGN_TOP_MID, 0, 12);
+
+    lv_obj_t * badge_icon = lv_label_create(badge);
+    lv_label_set_text(badge_icon, LV_SYMBOL_OK);
+    lv_obj_set_style_text_color(badge_icon, KINETIC_COLOR_ON_PRIMARY, 0);
+    lv_obj_center(badge_icon);
+
+    lv_obj_t * title = lv_label_create(card);
+    lv_label_set_text(title, "Target Reached");
+    lv_obj_set_style_text_color(title, KINETIC_COLOR_TEXT, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 66);
+
+    lv_obj_t * value_lbl = lv_label_create(card);
+    lv_label_set_text_fmt(value_lbl, "%s\n%u uS/cm", routine_label, (unsigned)ec_us_cm);
+    lv_obj_set_style_text_align(value_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(value_lbl, KINETIC_COLOR_SECONDARY, 0);
+    lv_obj_align(value_lbl, LV_ALIGN_TOP_MID, 0, 90);
+
+    lv_obj_t * ok_btn = lv_btn_create(card);
+    lv_obj_set_size(ok_btn, 100, 40);
+    lv_obj_align(ok_btn, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_style_bg_color(ok_btn, KINETIC_COLOR_PRIMARY, 0);
+    lv_obj_t * ok_lbl = lv_label_create(ok_btn);
+    lv_label_set_text(ok_lbl, "OK");
+    lv_obj_set_style_text_color(ok_lbl, KINETIC_COLOR_ON_PRIMARY, 0);
+    lv_obj_center(ok_lbl);
+    lv_obj_add_event_cb(ok_btn, dose_popup_ok_event_cb, LV_EVENT_CLICKED, backdrop);
+
+    s_dose_popup_backdrop = backdrop;
 }
 
 void kinetic_os_set_pump_switch_cb(kinetic_os_switch_cb_t cb) { user_pump_cb = cb; }

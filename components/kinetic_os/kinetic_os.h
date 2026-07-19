@@ -115,6 +115,11 @@ typedef struct {
 } kinetic_cal_update_t;
 
 void kinetic_os_update_cal(const kinetic_cal_update_t *d);
+
+// Modal popup shown when a target-dose routine reaches its EC setpoint.
+// Overlays whichever page is currently visible; dismissed by the user
+// tapping OK. Call only from the display task (LVGL is not thread-safe).
+void kinetic_os_show_dose_complete_popup(const char *routine_label, uint32_t ec_us_cm);
 typedef void (*kinetic_os_cal_start_cb_t)(void);
 typedef void (*kinetic_os_cal_clear_cb_t)(void);
 typedef void (*kinetic_os_cal_ignore_temp_cb_t)(void);

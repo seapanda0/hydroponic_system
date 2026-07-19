@@ -16,6 +16,7 @@
 #include "esp_timer.h"
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 
 #include "st7789.h"
 #include "sht4x.h"
@@ -132,9 +133,21 @@ static const char *TAG = "ST7789";
 #define EC_HISTORY_WINDOW_MS 180000U
 #define EC_HISTORY_POINT_COUNT (EC_HISTORY_WINDOW_MS / EC_HISTORY_SAMPLE_PERIOD_MS)
 
+// Grow light soft fade via LEDC PWM
+#define GROW_LIGHT_PWM_FREQ_HZ    5000
+#define GROW_LIGHT_PWM_RES        LEDC_TIMER_10_BIT   // 0-1023 duty steps
+#define GROW_LIGHT_PWM_MODE       LEDC_LOW_SPEED_MODE
+#define GROW_LIGHT_PWM_TIMER      LEDC_TIMER_0
+#define GROW_LIGHT_PWM_CHANNEL    LEDC_CHANNEL_0
+#define GROW_LIGHT_FADE_TIME_MS   1500
 
 static bool s_pump_on = false;
 static bool s_grow_light_on = false;
+// Set by target_dose_task on any FreeRTOS task; consumed only by the ST7789
+// display task, which is the only task allowed to touch LVGL.
+static volatile bool s_dose_popup_pending = false;
+static volatile uint32_t s_dose_popup_ec = 0;
+static const char *s_dose_popup_tag = "";
 static bool s_fert_a_on = false;
 static bool s_fert_b_on = false;
 static bool g_touch_ready = false;
@@ -355,6 +368,8 @@ static void tp_init(void) {
     }
 }
 
+static inline uint32_t grow_light_duty_for_percent(uint8_t pct);
+
 static void init_actuator_outputs(void)
 {
     for (size_t i = 0; i < sizeof(s_dosing_heads) / sizeof(s_dosing_heads[0]); i++) {
@@ -369,8 +384,47 @@ static void init_actuator_outputs(void)
     gpio_set_level(CIRCULATION_PUMP_GPIO, OUTPUT_OFF_LEVEL);
 #endif
 
-    gpio_set_direction(GROW_LIGHT_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_level(GROW_LIGHT_GPIO, OUTPUT_OFF_LEVEL);
+    // Grow light is dimmed via LEDC PWM (not a plain relay switch) so it can
+    // be soft-started/soft-stopped instead of snapping on/off.
+    ledc_timer_config_t grow_light_timer = {
+        .speed_mode       = GROW_LIGHT_PWM_MODE,
+        .timer_num        = GROW_LIGHT_PWM_TIMER,
+        .duty_resolution  = GROW_LIGHT_PWM_RES,
+        .freq_hz          = GROW_LIGHT_PWM_FREQ_HZ,
+        .clk_cfg          = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&grow_light_timer);
+
+    ledc_channel_config_t grow_light_channel = {
+        .gpio_num   = GROW_LIGHT_GPIO,
+        .speed_mode = GROW_LIGHT_PWM_MODE,
+        .channel    = GROW_LIGHT_PWM_CHANNEL,
+        .timer_sel  = GROW_LIGHT_PWM_TIMER,
+        .duty       = grow_light_duty_for_percent(0),
+        .hpoint     = 0,
+    };
+    ledc_channel_config(&grow_light_channel);
+    ledc_fade_func_install(0);
+}
+
+// Converts a 0-100 brightness percentage into a raw LEDC duty value, taking
+// OUTPUT_ON_LEVEL/OUTPUT_OFF_LEVEL polarity into account (V2's relay board is
+// active-low, so "brighter" means the pin spends more time LOW, i.e. a lower
+// duty value, and vice versa for V1's active-high wiring).
+static inline uint32_t grow_light_duty_for_percent(uint8_t pct)
+{
+    if (pct > 100) pct = 100;
+    uint32_t max_duty = (1U << GROW_LIGHT_PWM_RES) - 1U;
+    uint32_t on_time = (max_duty * pct) / 100U;
+    return (OUTPUT_ON_LEVEL != 0) ? on_time : (max_duty - on_time);
+}
+
+static void grow_light_fade_to(uint8_t pct)
+{
+    uint32_t target_duty = grow_light_duty_for_percent(pct);
+    ledc_set_fade_with_time(GROW_LIGHT_PWM_MODE, GROW_LIGHT_PWM_CHANNEL,
+                             target_duty, GROW_LIGHT_FADE_TIME_MS);
+    ledc_fade_start(GROW_LIGHT_PWM_MODE, GROW_LIGHT_PWM_CHANNEL, LEDC_FADE_NO_WAIT);
 }
 
 static void ui_pump_switch_cb(bool is_on)
@@ -386,8 +440,8 @@ static void ui_pump_switch_cb(bool is_on)
 static void ui_light_switch_cb(bool is_on)
 {
 	s_grow_light_on = is_on;
-	gpio_set_level(GROW_LIGHT_GPIO, is_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
-	ESP_LOGI(TAG, "Grow light %s", is_on ? "ON" : "OFF");
+	grow_light_fade_to(is_on ? 100 : 0);
+	ESP_LOGI(TAG, "Grow light %s (fading)", is_on ? "ON" : "OFF");
     hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_LIGHT, is_on);
 }
 
@@ -876,6 +930,11 @@ void ST7789(void *pvParameters)
         kinetic_os_set_routine_state(KINETIC_ROUTINE_SHOT_B, s_dosing_heads[1].shot_dose_active);
         kinetic_os_set_routine_state(KINETIC_ROUTINE_TARGET_AB, s_dose_groups[DOSE_GROUP_AB].active);
         kinetic_os_set_target_ec_display(s_dose_groups[DOSE_GROUP_AB].target_ec);
+
+        if (s_dose_popup_pending) {
+            s_dose_popup_pending = false;
+            kinetic_os_show_dose_complete_popup(s_dose_popup_tag, s_dose_popup_ec);
+        }
         // Feed calibration page
         {
             kinetic_cal_update_t cu;
@@ -1077,6 +1136,7 @@ static void target_dose_task(void *args)
     dose_group_t *group = (dose_group_t *)args;
     uint32_t target_ec = (uint32_t)(group->target_ec * 1000.0f); // mS/cm -> uS/cm
     bool target_reached = false;
+    uint32_t reached_ec = 0;
 
     ESP_LOGI(group->tag, "Target dosing started, target EC: %u", (unsigned int)target_ec);
 
@@ -1107,6 +1167,7 @@ static void target_dose_task(void *args)
         } else {
             ESP_LOGI(group->tag, "Target EC reached, stopping dosing loop");
             target_reached = true;
+            reached_ec = current_ec;
             break;
         }
         // Let the nutrient mix before the next EC measurement
@@ -1119,6 +1180,15 @@ static void target_dose_task(void *args)
         gpio_set_level(group->heads[i]->valve_gpio, OUTPUT_OFF_LEVEL);
     }
     group->active = false;
+
+    if (target_reached) {
+        // Display task (ST7789) picks this up and shows the popup; LVGL
+        // calls are only safe from that task.
+        s_dose_popup_tag = group->tag;
+        s_dose_popup_ec  = reached_ec;
+        s_dose_popup_pending = true;
+    }
+
     vTaskDelete(NULL);
 }
 
@@ -1298,8 +1368,8 @@ void hydro_web_toggle(const char *device, float concentration)
 {
     if (strcmp(device, "light") == 0) {
         s_grow_light_on = !s_grow_light_on;
-        gpio_set_level(GROW_LIGHT_GPIO, s_grow_light_on ? OUTPUT_ON_LEVEL : OUTPUT_OFF_LEVEL);
-        ESP_LOGI(TAG, "Grow light %s (web)", s_grow_light_on ? "ON" : "OFF");
+        grow_light_fade_to(s_grow_light_on ? 100 : 0);
+        ESP_LOGI(TAG, "Grow light %s (web, fading)", s_grow_light_on ? "ON" : "OFF");
         hydro_mqtt_publish_device_state(HYDRO_TOPIC_STATE_LIGHT, s_grow_light_on);
         return;
     }
